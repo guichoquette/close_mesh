@@ -1,0 +1,66 @@
+# Environnements virtuels
+venv/
+.env/
+.venv/
+
+# Fichiers temporaires Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+
+# Fichiers Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Cache
+*.cache/
+*.mypy_cache/
+*.pytest_cache/
+*.tox/
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Résultats temporaires / sorties
+*.out
+*.tmp
+*.swp
+*.bak
+
+# Données volumineuses
+brain_data/spc-02
+brain_data/spc-02-output
+brain_data/spc-02-debug
+brain_data/closed_solid
+!brain_data/closed_solid/output.ply
+!brain_data/closed_solid/output_colored.ply
+
+*.nii
+*.nii.gz
+*.fdf
+*.pgm
+*.npy
+*.npz
+
+# Images/outputs générés
+Images_output/
+*.png
+*.jpg
+*.tiff
+*.pdf
+
+# Config éditeurs/IDE
+.idea/
+*.code-workspace
+
+# Ignore all mov
+*.mov
+*.mp4
+!process-steps.mp4
+!data-issues.mp4
+sequence-03-1.gif

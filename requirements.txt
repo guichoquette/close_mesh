@@ -1,0 +1,11 @@
+# Core runtime dependencies
+numpy
+scipy
+matplotlib
+trimesh
+pyvista
+shapely
+vtk
+
+# Development dependencies
+ruff
