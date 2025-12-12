@@ -51,6 +51,7 @@ brain_data/closed_solid
 Images_output/
 *.png
 *.jpg
+!sub-02_epo-01_ref-01_mesh.jpg
 *.tiff
 *.pdf
 
