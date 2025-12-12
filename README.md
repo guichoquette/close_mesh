@@ -78,7 +78,7 @@ This part explains how to run the full hole-closing and scalar-transfer pipeline
 
 ```bash
 # Create environment
-python3 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\Activate.ps1
 
 # Install dependencies
@@ -92,10 +92,18 @@ python close_opening_scripts/close_planar_hole.py \
     --debug ../brain_data/closed_solid/
 
 # Transfer scalar fields
-python utils/copy_color.py
+python utils/copy_colors.py
 ```
 
-You can now view the closed mesh in Cloudcompare or MeshLab
+You can now view the closed mesh in Cloudcompare or MeshLab. You can find the closed mesh in brain_data/closed_solid. The interesting files for this quick test run are: `output.ply` and `output_scalar_fields.ply`.
+
+If you don't have Cloudcompare or MeshLab, I made a quick viewer for you. All you need to do is type in the terminal:
+
+```bash
+./view_ply.sh
+```
+
+NOTE: You will be able to see the closed mesh followed by the closed mesh with his scalars fields once you closed the first opened window.
 
 # 🔧 Cap Closing Algorithm (`close_planar_hole.py`)
 
