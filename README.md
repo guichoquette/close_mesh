@@ -46,7 +46,7 @@ https://bradipho.eu/6-download.html
 
 All specimens and epochs are publicly available and easy to download.
 
-The folder `closed_solid` also contains the **first epoch** of a specimen along with its **texture file**.
+The folder `brain_data` also contains the **first epoch** of a specimen along with its **texture file**.
 These two files are confirmed to work well with the full pipeline and are ideal for a **quick test run** of the scripts.
 
 # 📦 Installation
@@ -72,7 +72,7 @@ Main libraries:
 
 ---
 
-# 🏃 Quick Run Test
+# 🏃 Quick Test Run
 
 This part explains how to run the full hole-closing and scalar-transfer pipeline starting from a clean environment.
 
