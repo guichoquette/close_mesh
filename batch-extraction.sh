@@ -45,7 +45,7 @@ python close_opening_scripts/close_planar_hole.py   -i ../brain_data/spc-02/diss
 
 echo "spc-02_hem-L_epo-10_dissection.ply"
 python close_opening_scripts/close_planar_hole.py   -i ../brain_data/spc-02/dissection/spc-02_hem-L_epo-10_dissection.ply \
-                                                    -o ../brain_data/spc-02-output/spc-02_hem-L_epo-11_dissection.ply \
+                                                    -o ../brain_data/spc-02-output/spc-02_hem-L_epo-10_dissection.ply \
                                                     --meshFilter 1e-5
 
 echo "spc-02_hem-L_epo-11_dissection.ply"

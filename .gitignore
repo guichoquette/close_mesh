@@ -36,6 +36,7 @@ Thumbs.db
 brain_data/spc-02
 brain_data/spc-02-output
 brain_data/spc-02-debug
+brain_data/*_epo-all_dissection/
 brain_data/closed_solid
 !brain_data/closed_solid/output.ply
 !brain_data/closed_solid/output_colored.ply
