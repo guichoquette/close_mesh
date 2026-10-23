@@ -221,9 +221,9 @@ Highly curved openings may distort projection or triangulation.
 
 Meshes with extremely short or irregular edges should be pre-filtered using `--meshFilter`.
 
-### 🔹 5. Concave openings may cause projection overlap
+### 🔹 5. Warped openings get a curved cap
 
-The algorithm assumes a single, well-behaved projected polygon.
+The planar cap needs the opening to project onto a plane as a simple (non self-intersecting) polygon. When the best-fit plane does not allow it, tilted planes are tried; if none works, the opening is closed with a curved (harmonic) cap instead and a `WARNING` is printed. Such a cap is not flat, which slightly changes how the closed volume is defined at that opening.
 
 ### 🔹 6. Scalar transfer uses nearest-neighbor
 

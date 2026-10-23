@@ -6,11 +6,13 @@ import numpy as np
 import pyvista as pv
 
 from close_opening_scripts.close_planar_hole import (
+    _find_projection_plane,
     _orient_loop_against_mesh,
     createSideBand,
     deleteFacesOutsidePolygon,
     extract_boundary_loops,
     make_cap,
+    make_curved_cap,
     make_orientation_consistent,
     orient_outward,
     remove_duplicate_faces,
@@ -181,6 +183,32 @@ class MakeCapTests(unittest.TestCase):
                     if reverse_loop:
                         loop = loop[::-1]
                     self.assert_closes_consistently(mesh, loop)
+
+
+class ProjectionPlaneTests(unittest.TestCase):
+    def test_flat_loop_uses_best_fit_plane(self):
+        t = np.linspace(0, 2 * np.pi, 20, endpoint=False)
+        loop = np.c_[np.cos(t), np.sin(t), np.zeros_like(t)]
+        _, _, _, normal = _find_projection_plane(loop)
+        self.assertAlmostEqual(abs(normal[2]), 1.0)
+
+    def test_knotted_loop_has_no_valid_plane(self):
+        # Trefoil knot: every planar projection crosses itself
+        t = np.linspace(0, 2 * np.pi, 120, endpoint=False)
+        loop = np.c_[np.sin(t) + 2 * np.sin(2 * t), np.cos(t) - 2 * np.cos(2 * t), -np.sin(3 * t)]
+        self.assertIsNone(_find_projection_plane(loop))
+
+
+class CurvedCapTests(MakeCapTests):
+    """Same guarantees as the planar cap, for the curved fallback."""
+
+    def assert_closes_consistently(self, mesh, loop):
+        cap = make_curved_cap(mesh, loop, self.args)
+        self.assertEqual(directed_edge_conflicts(cap), 0)
+
+        closed = mesh.merge(cap, merge_points=True).clean(polys_to_lines=False)
+        self.assertEqual(open_edges(closed), 0)
+        self.assertEqual(directed_edge_conflicts(closed), 0)
 
 
 if __name__ == "__main__":

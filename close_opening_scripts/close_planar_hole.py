@@ -41,6 +41,9 @@ import pyvista as pv
 import trimesh
 import trimesh.visual
 from matplotlib.path import Path as mplPath
+from scipy.sparse import coo_matrix, diags
+from scipy.sparse.linalg import splu
+from scipy.spatial import Delaunay
 from shapely.geometry import Polygon
 
 def _get_bool_attr_or_method(obj, name, default=True):
@@ -1060,6 +1063,146 @@ def createSideBand(loopOpeningPoints, projectedLoop):
     return sideBand
 
 
+def _plane_basis(normal: np.ndarray):
+    """Orthonormal in-plane basis (u, v) for a plane of given normal."""
+    n = normal / np.linalg.norm(normal)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(n, helper)
+    u /= np.linalg.norm(u)
+    return u, np.cross(n, u)
+
+
+def _find_projection_plane(loopOpeningPoints: np.ndarray):
+    """
+    Find a plane on which the loop projects to a simple (non self-intersecting) polygon.
+
+    The SVD best-fit plane is tried first. When the opening is too warped for
+    it, the normal is tilted step by step around it, then the two other SVD
+    axes are tried.
+
+    Parameters
+    ----------
+    loopOpeningPoints : np.ndarray, shape (N, 3)
+        Loop vertices, in loop order.
+
+    Returns
+    -------
+    plane : tuple (center, u_hat, v_hat, normal) or None
+        Unit in-plane basis and normal of the first valid plane, or None if
+        no tested plane gives a simple polygon.
+    """
+    center, u, v, n = fit_plane_svd(loopOpeningPoints)
+    rel = loopOpeningPoints - center
+
+    def is_simple(u_hat, v_hat):
+        polygon = Polygon(np.column_stack([rel @ u_hat, rel @ v_hat]))
+        return polygon.is_valid and polygon.area > 0
+
+    if is_simple(u, v):
+        return center, u, v, n
+
+    candidates = []
+    for tilt_deg in (10, 20, 30, 45, 60):
+        t = np.tan(np.radians(tilt_deg))
+        for a in np.linspace(0, 2 * np.pi, 12, endpoint=False):
+            candidates.append(n + t * (np.cos(a) * u + np.sin(a) * v))
+    candidates += [u, v]
+
+    for normal in candidates:
+        normal = normal / np.linalg.norm(normal)
+        u_hat, v_hat = _plane_basis(normal)
+        if is_simple(u_hat, v_hat):
+            return center, u_hat, v_hat, normal
+    return None
+
+
+def make_curved_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
+    """
+    Close an opening with a curved (harmonic) cap, for loops with no valid projection plane.
+
+    1) The loop is mapped onto the unit circle, by arc length. A circle is
+       always a simple polygon, so the 2D triangulation is always valid.
+    2) Seeds are placed on a regular grid inside the disk, away from its
+       border, and the disk is triangulated. The disk is convex, so a plain
+       Delaunay triangulation covers it exactly; no boundary constraint is needed.
+       Qhull (scipy) is used rather than VTK, whose Delaunay2D produces
+       overlapping triangles when many points lie on the same circle.
+    3) Loop vertices keep their exact 3D positions; interior vertices are
+       placed by solving a Laplace equation (each vertex at the average of
+       its neighbours), which gives a smooth membrane spanning the loop.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Base mesh containing the opening.
+    loop_indices : np.ndarray
+        Indices of the boundary loop vertices in `mesh.points`.
+    args : argparse.Namespace
+        CLI arguments controlling seeding.
+
+    Returns
+    -------
+    cap : pv.PolyData
+        Curved cap, wound opposite to the mesh along the shared boundary.
+    """
+    loop_indices = _orient_loop_against_mesh(mesh, loop_indices)
+    loopOpeningPoints = np.asarray(mesh.points[loop_indices], dtype=float)
+    n_loop = len(loop_indices)
+
+    # 1) Loop on the unit circle, by arc length
+    seg = np.linalg.norm(np.roll(loopOpeningPoints, -1, axis=0) - loopOpeningPoints, axis=1)
+    angles = 2 * np.pi * np.concatenate([[0.0], np.cumsum(seg)[:-1]]) / seg.sum()
+    disk_loop = np.column_stack([np.cos(angles), np.sin(angles)])
+
+    # 2) Seeds inside the disk, spaced like the loop (mean segment length on the circle)
+    mean_seg = 2 * np.pi / n_loop
+    step = mean_seg * args.seedStepFactor
+    margin = mean_seg * args.seedDecimator
+    ticks = np.arange(-1.0, 1.0 + step, step)
+    UU, VV = np.meshgrid(ticks, ticks)
+    grid = np.column_stack([UU.ravel(), VV.ravel()])
+    seeds = grid[np.linalg.norm(grid, axis=1) < 1.0 - margin]
+
+    disk_pts = np.vstack([disk_loop, seeds])
+    disk = _faces_to_polydata(
+        np.column_stack([disk_pts, np.zeros(len(disk_pts))]), Delaunay(disk_pts).simplices
+    )
+    disk = _orient_cap_faces_like_loop(
+        disk, np.zeros(3), np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), disk_loop
+    )
+    faces = disk.faces.reshape(-1, 4)[:, 1:]
+
+    used = np.zeros(len(disk_pts), dtype=bool)
+    used[faces.ravel()] = True
+    if not used[:n_loop].all():
+        raise ValueError("Disk triangulation skipped loop vertices; cannot build the curved cap.")
+    # Drop seeds left out of the triangulation (they would make the system singular)
+    new_index = np.cumsum(used) - 1
+    faces = new_index[faces]
+    disk_pts = disk_pts[used]
+
+    # 3) Harmonic interior positions with the loop fixed: L_ii x_i - sum_j x_j = 0
+    n_pts = len(disk_pts)
+    i_idx = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2], faces[:, 1], faces[:, 2], faces[:, 0]])
+    j_idx = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0], faces[:, 0], faces[:, 1], faces[:, 2]])
+    adjacency = coo_matrix((np.ones(len(i_idx)), (i_idx, j_idx)), shape=(n_pts, n_pts)).tocsr()
+    adjacency.data[:] = 1.0  # duplicated edges count once
+    laplacian = diags(np.asarray(adjacency.sum(axis=1)).ravel()) - adjacency
+
+    points_3d = np.zeros((n_pts, 3))
+    points_3d[:n_loop] = loopOpeningPoints
+    if n_pts > n_loop:
+        inner = slice(n_loop, n_pts)
+        rhs = -laplacian[inner, :n_loop] @ loopOpeningPoints
+        solver = splu(laplacian[inner, inner].tocsc())
+        points_3d[inner] = np.column_stack([solver.solve(rhs[:, k]) for k in range(3)])
+
+    cap = _faces_to_polydata(points_3d, faces)
+    if args.debug:
+        _save(cap, "debug_curved_cap.ply", args)
+    return cap
+
+
 def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
     """
     Generate a triangulated cap that closes a single opening on a 3D mesh.
@@ -1067,7 +1210,9 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
     Detailed steps
     --------------
     1) Order the loop against the mesh winding and extract its vertices.
-    2) Estimate a best-fit plane via SVD.
+    2) Estimate a best-fit plane via SVD; if the loop does not project to a
+       simple polygon on it, try tilted planes, and fall back to a curved
+       cap (`make_curved_cap`) if none works.
     3) Translate this plane so that it touches the top of the opening.
     4) Project the loop vertices onto the plane.
     5) Generate a regular 2D grid of candidate seed points.
@@ -1102,10 +1247,14 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
     mean_seg = perimeter_mean_length(loopOpeningPoints)
 
 
-    # 2) Estimate plane using SVD: c = center, (u, v) = in-plane basis, n = normal
-    planePoint, u, v, planeNormal = fit_plane_svd(loopOpeningPoints)
-    u_hat = u / (np.linalg.norm(u) + 1e-12)
-    v_hat = v / (np.linalg.norm(v) + 1e-12)
+    # 2) Estimate a plane on which the loop projects to a simple polygon: c = center, (u, v) = in-plane basis, n = normal
+    plane = _find_projection_plane(loopOpeningPoints)
+    if plane is None:
+        # No planar cap is possible without overlaps: fall back to a curved cap
+        print(f"WARNING: opening of {len(loop_indices)} vertices has no valid projection plane, "
+              f"closed with a curved cap instead of a planar one.")
+        return make_curved_cap(mesh, loop_indices, args)
+    planePoint, u_hat, v_hat, planeNormal = plane
 
 
     # 3) Slide the plane so that it aligns with the "top" of the opening
