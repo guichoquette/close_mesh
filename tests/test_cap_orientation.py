@@ -9,13 +9,13 @@ from close_opening_scripts.close_planar_hole import (
     _find_projection_plane,
     _orient_loop_against_mesh,
     createSideBand,
-    deleteFacesOutsidePolygon,
     extract_boundary_loops,
     make_cap,
     make_curved_cap,
     make_orientation_consistent,
     orient_outward,
     remove_duplicate_faces,
+    runDelaunay2dOnConcavePolygon,
 )
 
 
@@ -99,14 +99,18 @@ class InputRepairTests(unittest.TestCase):
         self.assertGreater(signed_volume(orient_outward(inward)), 0)
 
 
-class PolygonInsideTests(unittest.TestCase):
-    def test_last_loop_vertex_is_part_of_the_polygon(self):
-        # Regression: matplotlib Path(closed=True) ignores the last vertex
-        poly_uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
-        cap = pv.PolyData(np.c_[poly_uv, np.zeros(4)], np.array([3, 0, 1, 2, 3, 0, 2, 3]))
-        kept = deleteFacesOutsidePolygon(cap, np.zeros(3), np.array([1.0, 0, 0]), np.array([0, 1.0, 0]),
-                                         poly_uv, argparse.Namespace(debug=None))
-        self.assertEqual(kept.n_cells, 2)
+class PlanarTriangulationTests(unittest.TestCase):
+    def test_keeps_long_constraint_edge_near_a_zigzag(self):
+        # Regression: VTK lost the long edge 3 -> 4, which passes close to vertex 2
+        loop_uv = np.array([[0, 0], [1, 0], [1.2, 0.05], [1.0, -0.01], [3, 0.4], [3, 2], [0, 2]], dtype=float)
+        points = np.c_[loop_uv, np.zeros(len(loop_uv))]
+        cap = runDelaunay2dOnConcavePolygon(points, points, np.zeros(3), np.array([1.0, 0, 0]),
+                                            np.array([0, 1.0, 0]), argparse.Namespace(debug=None))
+        n = len(loop_uv)
+        boundary = {e for e, c in Counter(
+            tuple(sorted((int(f[k]), int(f[(k + 1) % 3])))) for f in cap.faces.reshape(-1, 4)[:, 1:] for k in range(3)
+        ).items() if c == 1}
+        self.assertEqual(boundary, {tuple(sorted((i, (i + 1) % n))) for i in range(n)})
 
 
 class BoundaryLoopTests(unittest.TestCase):

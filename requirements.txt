@@ -5,6 +5,7 @@ matplotlib
 trimesh
 pyvista
 shapely
+triangle
 vtk
 
 # Development dependencies

@@ -38,6 +38,7 @@ from pathlib import Path
 
 import numpy as np
 import pyvista as pv
+import triangle
 import trimesh
 import trimesh.visual
 from matplotlib.path import Path as mplPath
@@ -910,17 +911,23 @@ def runDelaunay2dOnConcavePolygon(projectedLoop, all_pts1, planePoint, u_hat, v_
     """
     Run 2D constrained Delaunay triangulation inside a (possibly concave) polygon.
 
-    VTK's Delaunay2D triangulates in the global XY plane. The points are
-    therefore expressed in the (u, v) frame of the cap plane before the
-    triangulation, then put back at their 3D positions; otherwise a cap plane
-    tilted with respect to XY gives a distorted, possibly folded triangulation.
+    The points are expressed in the (u, v) frame of the cap plane and
+    triangulated with Triangle (J. R. Shewchuk), using the loop edges as
+    constraints. Triangle recovers every constraint edge, removes the
+    triangles outside the polygon itself, and is forbidden to insert points on
+    the loop (-Y) so that loop vertices keep their one-to-one match with the
+    side band.
+
+    VTK's Delaunay2D was used before; it triangulates in the global XY plane,
+    drops points closer than its tolerance, and can lose long constraint edges,
+    each of which left holes in the cap.
 
     Parameters
     ----------
     projectedLoop : np.ndarray, shape (N, 3)
-        Projected loop vertices in 3D (lying in the cap plane).
+        Projected loop vertices in 3D (lying in the cap plane), in loop order.
     all_pts1 : np.ndarray, shape (M, 3)
-        All points to consider for triangulation (loop + interior seeds).
+        All points to consider for triangulation (loop first, then interior seeds).
     planePoint : np.ndarray, shape (3,)
         Reference point on the cap plane.
     u_hat, v_hat : np.ndarray, shape (3,)
@@ -931,25 +938,19 @@ def runDelaunay2dOnConcavePolygon(projectedLoop, all_pts1, planePoint, u_hat, v_
     Returns
     -------
     cap : pv.PolyData
-        Triangulated cap filling the polygon.
+        Triangulated cap filling the polygon, with the points of `all_pts1`.
     """
-    # Build a closed polyline (edge source) for constrained triangulation
-    N_loop = projectedLoop.shape[0]
-    lines = np.empty((1, N_loop + 2), dtype=np.int64)
-    lines[0, 0] = N_loop + 1
-    lines[0, 1:-1] = np.arange(N_loop)
-    lines[0, -1] = 0
-
-    # Points in the (u, v) frame of the cap plane, z = 0
+    n_loop = projectedLoop.shape[0]
     rel = all_pts1 - planePoint
-    pts_uv = np.column_stack([rel @ u_hat, rel @ v_hat, np.zeros(len(all_pts1))])
-    edge_poly = pv.PolyData(pts_uv, lines=lines)
+    pts_uv = np.column_stack([rel @ u_hat, rel @ v_hat])
+    segments = np.column_stack([np.arange(n_loop), (np.arange(n_loop) + 1) % n_loop])
 
-    # Constrained 2D Delaunay triangulation, then back to 3D (point order is preserved)
-    cap_uv = pv.PolyData(pts_uv).delaunay_2d(edge_source=edge_poly).triangulate()
-    if cap_uv.n_points != len(all_pts1):
-        raise ValueError("Delaunay triangulation changed the cap points; cannot map it back to 3D.")
-    cap = pv.PolyData(np.asarray(all_pts1, dtype=float), cap_uv.faces)
+    # p: constrained by the segments, triangles outside them removed; Y: no point added on them; Q: quiet
+    result = triangle.triangulate({"vertices": pts_uv, "segments": segments}, "pYQ")
+    if len(result["vertices"]) != len(all_pts1):
+        raise ValueError("Triangulation added points to the cap; cannot map it back to 3D.")
+
+    cap = _faces_to_polydata(np.asarray(all_pts1, dtype=float), result["triangles"])
     if args.debug:
         _save(cap, "debug_delaunay.ply", args)
 
@@ -960,63 +961,6 @@ def _signed_area_uv(uv: np.ndarray) -> np.ndarray:
     """Signed area of polygon(s) given as (..., N, 2) arrays (positive = counter-clockwise)."""
     x, y = uv[..., 0], uv[..., 1]
     return 0.5 * np.sum(x * np.roll(y, -1, axis=-1) - np.roll(x, -1, axis=-1) * y, axis=-1)
-
-
-def deleteFacesOutsidePolygon(cap, planePoint, u_hat, v_hat, poly_uv, args: argparse.Namespace):
-    """
-    Remove triangles whose barycenter lies outside the original polygon.
-
-    Parameters
-    ----------
-    cap : pv.PolyData
-        Triangulated cap (in 3D).
-    planePoint : np.ndarray, shape (3,)
-        Reference point on the cap plane.
-    u_hat, v_hat : np.ndarray, shape (3,)
-        Orthogonal basis for the cap plane.
-    poly_uv : np.ndarray, shape (N, 2)
-        Polygon vertices in (u, v) of the original (non-offset) loop.
-    args : argparse.Namespace
-        CLI arguments (used for debug export).
-
-    Returns
-    -------
-    cap_final : pv.PolyData
-        Cap with triangles outside the polygon removed.
-    """
-    # Extract triangle connectivity and compute triangle centroids
-    faces = cap.faces.reshape(-1, 4)[:, 1:]
-    pts_cap = cap.points
-    tri_pts = pts_cap[faces]
-    tri_centers = tri_pts.mean(axis=1)
-
-    # Project each triangle center onto the UV frame of the cap
-    rel_c = tri_centers - planePoint
-    tri_u = rel_c @ u_hat
-    tri_v = rel_c @ v_hat
-    tri_uv = np.column_stack([tri_u, tri_v])
-
-    # Determine which triangles lie inside the polygon in 2D
-    # closed=True would make matplotlib ignore the last vertex; contains_points closes the path anyway
-    poly_path = mplPath(poly_uv)
-    inside_tri = poly_path.contains_points(tri_uv)
-    faces_inside = faces[inside_tri]
-
-    # Build a new PolyData containing only the inside faces
-    if faces_inside.shape[0] == 0:
-        cap_final = cap
-    else:
-        n_tri = faces_inside.shape[0]
-        faces_flat = np.hstack(
-            [np.full((n_tri, 1), 3, dtype=np.int64), faces_inside]
-        ).ravel()
-        cap_final = pv.PolyData(pts_cap, faces_flat)
-
-    # Optional debug export of the filtered cap
-    if args.debug:
-        _save(cap_final, "debug_delaunay_concave.ply", args)
-
-    return cap_final
 
 
 def createSideBand(loopOpeningPoints, projectedLoop):
@@ -1220,9 +1164,8 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
          - inside a shrunken version of the loop polygon,
          - sufficiently far from the border.
     7) Run constrained 2D Delaunay triangulation on all points
-       (loop + seeds).
-    8) Remove triangles whose barycenter is outside the loop polygon,
-       and wind the remaining ones in the loop order.
+       (loop + seeds), restricted to the inside of the loop polygon.
+    8) Wind the triangles in the loop order.
     9) Build a side band connecting the original 3D loop to its projection.
     10) Merge inner cap and side band into a single watertight surface.
 
@@ -1284,8 +1227,7 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
     # 8) Constrained Delaunay in 2D
     cap = runDelaunay2dOnConcavePolygon(projectedLoop, all_pts, planePoint, u_hat, v_hat, args)
 
-    # 9) Remove triangles lying outside the polygon
-    cap = deleteFacesOutsidePolygon(cap, planePoint, u_hat, v_hat, poly_uv, args)
+    # 9) Wind the triangles in the loop order
     cap = _orient_cap_faces_like_loop(cap, planePoint, u_hat, v_hat, poly_uv)
 
     # 10) Build side band between 3D loop and its projection
