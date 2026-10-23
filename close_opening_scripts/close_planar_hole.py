@@ -33,7 +33,7 @@ Dependencies: numpy, pyvista (VTK), trimesh, shapely, matplotlib
 
 import argparse
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -41,7 +41,6 @@ import pyvista as pv
 import trimesh
 import trimesh.visual
 from matplotlib.path import Path as mplPath
-from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
 def _get_bool_attr_or_method(obj, name, default=True):
@@ -247,6 +246,136 @@ def collapse_short_edges(mesh: pv.PolyData, tol: float = 1e-5) -> pv.PolyData:
     return new_mesh
 
 
+def _faces_to_polydata(points: np.ndarray, faces: np.ndarray) -> pv.PolyData:
+    """Build a triangle PolyData from (N, 3) face indices."""
+    faces_flat = np.hstack(
+        [np.full((faces.shape[0], 1), 3, dtype=np.int64), faces]
+    ).ravel()
+    return pv.PolyData(points, faces_flat)
+
+
+def remove_duplicate_faces(mesh: pv.PolyData) -> pv.PolyData:
+    """
+    Remove every triangle that appears more than once (in any winding).
+
+    Scanned meshes sometimes contain pairs of identical triangles wound in
+    opposite directions: a zero-thickness flap. Each of its edges is shared
+    by three or more faces (non-manifold) and the two copies contradict each
+    other's orientation. Removing all copies leaves the surrounding surface
+    intact.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Triangulated mesh.
+
+    Returns
+    -------
+    mesh : pv.PolyData
+        Mesh without duplicated triangles.
+    """
+    faces = mesh.faces.reshape(-1, 4)[:, 1:]
+    _, inverse, counts = np.unique(
+        np.sort(faces, axis=1), axis=0, return_inverse=True, return_counts=True
+    )
+    unique_faces = counts[inverse.ravel()] == 1
+    if unique_faces.all():
+        return mesh
+    return _faces_to_polydata(mesh.points, faces[unique_faces]).clean()
+
+
+def make_orientation_consistent(mesh: pv.PolyData) -> pv.PolyData:
+    """
+    Make neighbouring triangles wound consistently, without crossing non-manifold edges.
+
+    Orientation is propagated face to face across manifold edges only (edges
+    shared by exactly two faces). Within each patch reached this way, the
+    winding held by the majority of its faces is kept, so a mostly correct
+    surface is only touched where it was wrong.
+
+    VTK's `consistent_normals` also walks through non-manifold edges, which
+    can flip whole regions of a scanned mesh; this is why it is not used here.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Triangulated mesh.
+
+    Returns
+    -------
+    mesh : pv.PolyData
+        Mesh with a consistent winding within each manifold patch.
+    """
+    faces = mesh.faces.reshape(-1, 4)[:, 1:].copy()
+    n_faces = faces.shape[0]
+
+    # Directed edges (a -> b) of every face, keyed by their unordered pair
+    a = faces.ravel()
+    b = np.roll(faces, -1, axis=1).ravel()
+    face_of_edge = np.repeat(np.arange(n_faces), 3)
+    forward = a < b
+    key = np.minimum(a, b).astype(np.int64) * mesh.n_points + np.maximum(a, b)
+
+    # Manifold edges: exactly two incident faces
+    order = np.argsort(key, kind="stable")
+    _, start, counts = np.unique(key[order], return_index=True, return_counts=True)
+    first = order[start[counts == 2]]
+    second = order[start[counts == 2] + 1]
+    f1, f2 = face_of_edge[first], face_of_edge[second]
+    # Same direction on the shared edge means the two faces disagree
+    disagree = forward[first] == forward[second]
+
+    neighbours = defaultdict(list)
+    for i, j, d in zip(f1.tolist(), f2.tolist(), disagree.tolist()):
+        neighbours[i].append((j, d))
+        neighbours[j].append((i, d))
+
+    # Breadth-first walk of each patch, recording which faces must flip
+    flip = np.zeros(n_faces, dtype=bool)
+    visited = np.zeros(n_faces, dtype=bool)
+    for seed in range(n_faces):
+        if visited[seed]:
+            continue
+        visited[seed] = True
+        patch = [seed]
+        queue = [seed]
+        while queue:
+            current = queue.pop()
+            for other, d in neighbours[current]:
+                if not visited[other]:
+                    visited[other] = True
+                    flip[other] = flip[current] ^ d
+                    patch.append(other)
+                    queue.append(other)
+        # Keep the majority winding of the patch
+        if 2 * flip[patch].sum() > len(patch):
+            flip[patch] = ~flip[patch]
+
+    if not flip.any():
+        return mesh
+    faces[flip] = faces[flip][:, ::-1]
+    return _faces_to_polydata(mesh.points, faces)
+
+
+def orient_outward(mesh: pv.PolyData) -> pv.PolyData:
+    """
+    Flip the whole mesh if its signed volume is negative (normals pointing inward).
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Consistently oriented, closed triangulated mesh.
+
+    Returns
+    -------
+    mesh : pv.PolyData
+        Same mesh, wound so that normals point outward.
+    """
+    tri = mesh.points[mesh.faces.reshape(-1, 4)[:, 1:]].astype(np.float64)
+    signed_volume = np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2])).sum() / 6.0
+    return mesh.flip_faces() if signed_volume < 0 else mesh
+
+
 def offset_polygon_inner(poly_uv: np.ndarray, delta: float) -> np.ndarray:
     """
     Compute an inward-offset polygon at distance `delta` from the original polygon.
@@ -369,9 +498,9 @@ def extract_boundary_loops(mesh: pv.PolyData):
     """
     Extract boundary loops (open edges) from a surface mesh.
 
-    This bloc uses PyVista's `extract_feature_edges` to obtain boundary edges, then
-    reconstructs ordered loops by following adjacency. Each loop is returned as
-    a list of point indices in the original mesh.
+    Boundary edges (used by a single triangle) are read from the mesh faces,
+    then chained into ordered loops by following adjacency. Each loop is
+    returned as a list of point indices in `mesh.points`.
 
     Parameters
     ----------
@@ -384,71 +513,56 @@ def extract_boundary_loops(mesh: pv.PolyData):
         List of loops, each loop being an array of vertex indices into
         `mesh.points`, ordered along the boundary.
     """
-    edges = mesh.extract_feature_edges(
-        boundary_edges=True,
-        feature_edges=False,
-        manifold_edges=False,
-        non_manifold_edges=False
+    faces = mesh.faces.reshape(-1, 4)[:, 1:]
+
+    # Boundary edges: unordered pairs used by exactly one triangle
+    edge_count = Counter(
+        tuple(sorted((int(f[k]), int(f[(k + 1) % 3])))) for f in faces for k in range(3)
     )
-    if edges.n_points == 0:
-        return []
-
-    # Build 1D connectivity from segments in edges.lines
-    # recover segments 2-verts with edges.lines: (n, 3) -> [2, i, j]
-    lines = edges.lines.reshape(-1, 3)[:, 1:3]
-
-    # Map: point -> neighbour
     nbrs = defaultdict(list)
-    for a, b in lines:
-        nbrs[a].append(b)
-        nbrs[b].append(a)
+    for (a, b), count in edge_count.items():
+        if count == 1:
+            nbrs[a].append(b)
+            nbrs[b].append(a)
 
-    visited = set()
+    # Walk the boundary edge by edge. A vertex shared by two openings (pinched
+    # boundary) is visited twice: the sub-cycle closed at that point is cut out
+    # as its own loop, so every loop is simple.
+    # Non-manifold edges can leave a boundary as an open chain (odd-degree end
+    # vertices). Walks start from those ends first, and a chain that cannot be
+    # closed by real boundary edges is closed between its two ends.
+    used = set()
     loops = []
-
-    for start in range(edges.n_points):
-        if start in visited:
-            continue
-        if len(nbrs[start]) == 0:
-            visited.add(start)
-            continue
-
-        # Walk around the boundary to build an ordered loop
-        loop = [start]
-        visited.add(start)
-        cur = start
-        prev = None
-
-        # Progress as long as it didn't loop around or blocked
-        while True:
-            nxt_candidates = [x for x in nbrs[cur] if x != prev]
-            if not nxt_candidates:
-                break
-            nxt = nxt_candidates[0]
-            if nxt == start:
-                # Returned to starting point => closed loop
-                break
-            if nxt in visited and nxt != start:
-                # Shouldn't happen for a proper boundary; break to avoid infinite loops
-                break
-            loop.append(nxt)
-            visited.add(nxt)
-            prev, cur = cur, nxt
-
-        # Convert edge vertex indices back to original mesh vertices.
-        # edges.points is a reordered subset; we need to return it
-        # Correspondance to mesh.points => use a KDTree for projetection.
-        # PyVista generaly conserve the topologie: edges.point_data["vtkOriginalPointIds"]
-        ids = None
-        # If available, use "vtkOriginalPointIds"; otherwise, fall back to KDTree.
-        if "vtkOriginalPointIds" in edges.point_data:
-            ids = edges.point_data["vtkOriginalPointIds"][loop]
-        else:
-            # Fallback (slower): position base research
-            tree = cKDTree(mesh.points)
-            _, ids = tree.query(edges.points[loop])
-
-        loops.append(ids)
+    starts = sorted(nbrs, key=lambda v: len(nbrs[v]) % 2 == 0)
+    for start in starts:
+        for first in nbrs[start]:
+            if tuple(sorted((start, first))) in used:
+                continue
+            path = [start]
+            position = {start: 0}
+            cur, nxt = start, first
+            while True:
+                used.add(tuple(sorted((cur, nxt))))
+                if nxt in position:
+                    # Closed a cycle: emit it and resume from where it started
+                    cut = position[nxt]
+                    loops.append(np.array(path[cut:], dtype=int))
+                    for v in path[cut + 1:]:
+                        del position[v]
+                    path = path[:cut + 1]
+                    if nxt == start and len(path) == 1:
+                        break
+                else:
+                    position[nxt] = len(path)
+                    path.append(nxt)
+                cur = nxt
+                candidates = [w for w in nbrs[cur] if tuple(sorted((cur, w))) not in used]
+                if not candidates:
+                    # Open chain: close it between its ends
+                    if len(path) > 2:
+                        loops.append(np.array(path, dtype=int))
+                    break
+                nxt = candidates[0]
 
     return loops
 
@@ -536,6 +650,110 @@ def _loop_edges(loop_indices: np.ndarray) -> set[tuple[int,int]]:
     L = np.asarray(loop_indices, dtype=int)
     return set(tuple(sorted((L[i], L[(i+1) % len(L)]))) for i in range(len(L)))
 
+
+def _orient_loop_against_mesh(mesh: pv.PolyData, loop_indices: np.ndarray) -> np.ndarray:
+    """
+    Order a boundary loop so that it runs opposite to the mesh winding.
+
+    Each boundary edge belongs to exactly one mesh triangle, which traverses
+    it in a given direction. A cap glued on that edge must traverse it the
+    other way for the closed surface to be consistently oriented. The order
+    returned by `extract_boundary_loops` is arbitrary, so it is fixed here
+    once, and every cap part is then built following this order.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Triangulated mesh containing the opening.
+    loop_indices : np.ndarray
+        Ordered loop vertex indices into `mesh.points`.
+
+    Returns
+    -------
+    loop_indices : np.ndarray
+        Same loop, reversed if needed so that each edge (L[i], L[i+1])
+        is traversed by the mesh as L[i+1] -> L[i].
+    """
+    L = np.asarray(loop_indices, dtype=int)
+    loop_edges = _loop_edges(L)
+
+    # Directed boundary edges as traversed by the mesh triangles
+    mesh_directed = set()
+    for face in mesh.faces.reshape(-1, 4)[:, 1:]:
+        for k in range(3):
+            a, b = int(face[k]), int(face[(k + 1) % 3])
+            if tuple(sorted((a, b))) in loop_edges:
+                mesh_directed.add((a, b))
+
+    same = opposite = 0
+    for i in range(len(L)):
+        a, b = int(L[i]), int(L[(i + 1) % len(L)])
+        if (a, b) in mesh_directed and (b, a) not in mesh_directed:
+            same += 1
+        elif (b, a) in mesh_directed and (a, b) not in mesh_directed:
+            opposite += 1
+
+    if same == 0 and opposite == 0:
+        raise ValueError("Cannot orient loop: no boundary edge found in the mesh faces.")
+    # A few edges may disagree where the input mesh has local defects: follow the majority
+    if same == opposite:
+        raise ValueError(
+            f"Cannot orient loop: mesh winding is ambiguous along the boundary "
+            f"({same} edges each way)."
+        )
+
+    return L[::-1].copy() if same > opposite else L
+
+
+def _orient_cap_faces_like_loop(cap: pv.PolyData, planePoint, u_hat, v_hat, poly_uv) -> pv.PolyData:
+    """
+    Wind every planar cap triangle in the same direction as the loop polygon.
+
+    `delaunay_2d` gives no guarantee on the winding of its output relative to
+    the loop order, so each triangle is checked individually: its signed area
+    in the (u, v) frame must have the same sign as the loop polygon.
+
+    Parameters
+    ----------
+    cap : pv.PolyData
+        Planar triangulated cap.
+    planePoint : np.ndarray, shape (3,)
+        Reference point on the cap plane.
+    u_hat, v_hat : np.ndarray, shape (3,)
+        Orthogonal basis for the cap plane.
+    poly_uv : np.ndarray, shape (N, 2)
+        Loop vertices in (u, v), in loop order.
+
+    Returns
+    -------
+    cap : pv.PolyData
+        Cap whose boundary edges follow the loop order.
+    """
+    loop_sign = np.sign(_signed_area_uv(poly_uv))
+
+    faces = cap.faces.reshape(-1, 4)[:, 1:].copy()
+    rel = cap.points[faces] - planePoint
+    tri_uv = np.stack([rel @ u_hat, rel @ v_hat], axis=-1)
+    reversed_tri = np.sign(_signed_area_uv(tri_uv)) == -loop_sign
+    faces[reversed_tri] = faces[reversed_tri][:, ::-1]
+
+    faces_flat = np.hstack([np.full((len(faces), 1), 3, dtype=np.int64), faces]).ravel()
+    return pv.PolyData(cap.points, faces_flat)
+
+
+def _remove_degenerate_faces(poly: pv.PolyData) -> pv.PolyData:
+    """
+    Drop triangles that reference the same vertex twice.
+
+    They appear when a loop vertex already lies on the cap plane and gets
+    merged with its projection; they would otherwise add a spurious edge
+    traversed in both directions.
+    """
+    faces = poly.faces.reshape(-1, 4)[:, 1:]
+    keep = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 2] != faces[:, 0])
+    faces_flat = np.hstack([np.full((int(keep.sum()), 1), 3, dtype=np.int64), faces[keep]]).ravel()
+    return pv.PolyData(poly.points, faces_flat)
+
 # --------------------------- Cap construction ---------------------------
 
 def  seedPointsOnThePlane(u_hat, v_hat, planePoint, projectedLoop, mean_seg, args: argparse.Namespace):
@@ -619,7 +837,8 @@ def keepSeededPointsInTheLoop(poly_uv, grid_uv, grid_points, delta):
         Inward-offset polygon vertices.
     """
     inner_poly_uv = offset_polygon_inner(poly_uv, delta)
-    poly_path = mplPath(inner_poly_uv, closed=True)
+    # closed=True would make matplotlib ignore the last vertex; contains_points closes the path anyway
+    poly_path = mplPath(inner_poly_uv)
     inside_mask = poly_path.contains_points(grid_uv)
     grid_pts_inside = grid_points[inside_mask]
 
@@ -684,9 +903,14 @@ def keepSeededPointsFarFromTheEdges(poly_uv, grid_pts_inside, grid_uv_inside, me
     return grid_pts_filtered
 
 
-def runDelaunay2dOnConcavePolygon(projectedLoop, all_pts1, cloud, args: argparse.Namespace):
+def runDelaunay2dOnConcavePolygon(projectedLoop, all_pts1, planePoint, u_hat, v_hat, args: argparse.Namespace):
     """
     Run 2D constrained Delaunay triangulation inside a (possibly concave) polygon.
+
+    VTK's Delaunay2D triangulates in the global XY plane. The points are
+    therefore expressed in the (u, v) frame of the cap plane before the
+    triangulation, then put back at their 3D positions; otherwise a cap plane
+    tilted with respect to XY gives a distorted, possibly folded triangulation.
 
     Parameters
     ----------
@@ -694,8 +918,10 @@ def runDelaunay2dOnConcavePolygon(projectedLoop, all_pts1, cloud, args: argparse
         Projected loop vertices in 3D (lying in the cap plane).
     all_pts1 : np.ndarray, shape (M, 3)
         All points to consider for triangulation (loop + interior seeds).
-    cloud : pv.PolyData
-        Point cloud carrying `all_pts1`.
+    planePoint : np.ndarray, shape (3,)
+        Reference point on the cap plane.
+    u_hat, v_hat : np.ndarray, shape (3,)
+        Orthogonal basis for the cap plane.
     args : argparse.Namespace
         CLI arguments, used for debug exports.
 
@@ -710,15 +936,27 @@ def runDelaunay2dOnConcavePolygon(projectedLoop, all_pts1, cloud, args: argparse
     lines[0, 0] = N_loop + 1
     lines[0, 1:-1] = np.arange(N_loop)
     lines[0, -1] = 0
-    edge_poly = pv.PolyData(all_pts1, lines=lines)
 
-    # Constrained 2D Delaunay triangulation
-    cap = cloud.delaunay_2d(edge_source=edge_poly)
-    cap = cap.triangulate()
+    # Points in the (u, v) frame of the cap plane, z = 0
+    rel = all_pts1 - planePoint
+    pts_uv = np.column_stack([rel @ u_hat, rel @ v_hat, np.zeros(len(all_pts1))])
+    edge_poly = pv.PolyData(pts_uv, lines=lines)
+
+    # Constrained 2D Delaunay triangulation, then back to 3D (point order is preserved)
+    cap_uv = pv.PolyData(pts_uv).delaunay_2d(edge_source=edge_poly).triangulate()
+    if cap_uv.n_points != len(all_pts1):
+        raise ValueError("Delaunay triangulation changed the cap points; cannot map it back to 3D.")
+    cap = pv.PolyData(np.asarray(all_pts1, dtype=float), cap_uv.faces)
     if args.debug:
         _save(cap, "debug_delaunay.ply", args)
 
     return cap
+
+
+def _signed_area_uv(uv: np.ndarray) -> np.ndarray:
+    """Signed area of polygon(s) given as (..., N, 2) arrays (positive = counter-clockwise)."""
+    x, y = uv[..., 0], uv[..., 1]
+    return 0.5 * np.sum(x * np.roll(y, -1, axis=-1) - np.roll(x, -1, axis=-1) * y, axis=-1)
 
 
 def deleteFacesOutsidePolygon(cap, planePoint, u_hat, v_hat, poly_uv, args: argparse.Namespace):
@@ -756,7 +994,8 @@ def deleteFacesOutsidePolygon(cap, planePoint, u_hat, v_hat, poly_uv, args: argp
     tri_uv = np.column_stack([tri_u, tri_v])
 
     # Determine which triangles lie inside the polygon in 2D
-    poly_path = mplPath(poly_uv, closed=True)
+    # closed=True would make matplotlib ignore the last vertex; contains_points closes the path anyway
+    poly_path = mplPath(poly_uv)
     inside_tri = poly_path.contains_points(tri_uv)
     faces_inside = faces[inside_tri]
 
@@ -783,7 +1022,7 @@ def createSideBand(loopOpeningPoints, projectedLoop):
 
     For each edge (i, j) of the original 3D loop, this function creates two
     triangles connecting it with the corresponding edge in the projected loop:
-        [i, j, i+N] and [i+N, j+N, j]
+        [i, j, i+N] and [i+N, j, j+N]
 
     Parameters
     ----------
@@ -795,7 +1034,9 @@ def createSideBand(loopOpeningPoints, projectedLoop):
     Returns
     -------
     sideBand : pv.PolyData
-        Triangulated side band mesh.
+        Triangulated side band mesh. It traverses the 3D loop as i -> j and
+        the projected loop as j+N -> i+N, so the planar cap must follow the
+        loop order to be consistent with it.
     """
     # Prepare full point list (first the 3D loop, then projection)
     N = loopOpeningPoints.shape[0]
@@ -809,8 +1050,8 @@ def createSideBand(loopOpeningPoints, projectedLoop):
         ap, bp = i + N, j + N
         # Triangle filling the quad: (a → b → a')
         faces.append([3, a, b, ap])
-        # Second triangle: (a' → b' → b)
-        faces.append([3, ap, bp, b])
+        # Second triangle: (a' → b → b'), same winding as the first one
+        faces.append([3, ap, b, bp])
 
     # Convert face list into PyVista format and create mesh
     faces = np.array(faces, dtype=np.int64).reshape(-1)
@@ -825,7 +1066,7 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
 
     Detailed steps
     --------------
-    1) Extract the boundary loop vertices.
+    1) Order the loop against the mesh winding and extract its vertices.
     2) Estimate a best-fit plane via SVD.
     3) Translate this plane so that it touches the top of the opening.
     4) Project the loop vertices onto the plane.
@@ -835,7 +1076,8 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
          - sufficiently far from the border.
     7) Run constrained 2D Delaunay triangulation on all points
        (loop + seeds).
-    8) Remove triangles whose barycenter is outside the loop polygon.
+    8) Remove triangles whose barycenter is outside the loop polygon,
+       and wind the remaining ones in the loop order.
     9) Build a side band connecting the original 3D loop to its projection.
     10) Merge inner cap and side band into a single watertight surface.
 
@@ -851,10 +1093,11 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
     Returns
     -------
     cap_merged : pv.PolyData
-        Final cap mesh with faces flipped (to match orientation).
+        Final cap mesh, wound opposite to the mesh along the shared boundary.
     """
 
-    # 1) Extract boundary loop points and mean segment length
+    # 1) Order the loop against the mesh winding, then extract its points and mean segment length
+    loop_indices = _orient_loop_against_mesh(mesh, loop_indices)
     loopOpeningPoints = mesh.points[loop_indices]
     mean_seg = perimeter_mean_length(loopOpeningPoints)
 
@@ -888,23 +1131,21 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
 
     # 7) Assemble points: projected loop + interior filtered points
     all_pts = np.vstack([projectedLoop, grid_pts_inside])
-    cloud = pv.PolyData(all_pts)
 
     # 8) Constrained Delaunay in 2D
-    cap = runDelaunay2dOnConcavePolygon(projectedLoop, all_pts, cloud, args)
+    cap = runDelaunay2dOnConcavePolygon(projectedLoop, all_pts, planePoint, u_hat, v_hat, args)
 
     # 9) Remove triangles lying outside the polygon
     cap = deleteFacesOutsidePolygon(cap, planePoint, u_hat, v_hat, poly_uv, args)
+    cap = _orient_cap_faces_like_loop(cap, planePoint, u_hat, v_hat, poly_uv)
 
     # 10) Build side band between 3D loop and its projection
     sideBand = createSideBand(loopOpeningPoints, projectedLoop)
 
     # 11) Merge cap interior and side band
-    cap_merged = cap.merge(sideBand, merge_points=True, tolerance=1e-6)
-    cap_merged = cap_merged
-
-    # Flip faces for consistent orientation
-    return cap_merged.flip_faces()
+    # The side band comes first so that merged points keep the exact mesh loop coordinates
+    cap_merged = sideBand.merge(cap, merge_points=True, tolerance=1e-6)
+    return _remove_degenerate_faces(cap_merged)
 
 
 # --------------------------- IO helpers ---------------------------
@@ -995,9 +1236,10 @@ def create_caps(args):
     -----
     1) Load and clean the input mesh.
     2) Optionally collapse very short edges (meshFilter).
-    3) Extract all boundary loops.
-    4) For each loop, create a cap.
-    5) Either:
+    3) Remove duplicated triangles and make the winding consistent.
+    4) Extract all boundary loops.
+    5) For each loop, create a cap.
+    6) Either:
        - Return only the union of caps (--capsOnly), or
        - Merge all caps into the original mesh (closed surface).
 
@@ -1011,7 +1253,7 @@ def create_caps(args):
     out : pv.PolyData
         Either:
         - The union of caps in capsOnly mode, or
-        - The closed mesh with caps merged and normals recomputed.
+        - The closed mesh with caps merged, oriented outward and normals recomputed.
     """
     # 1) Load the mesh and ensure a clean, triangulated representation
     input_path = Path(args.input).resolve()
@@ -1023,7 +1265,11 @@ def create_caps(args):
         if args.debug:
             _save(base, "debug_meshFiltered.ply", args)
 
-    # 3) Detect all open boundary loops. Each loop corresponds to a hole that must be closed with a cap.
+    # 3) Repair the input so that each boundary edge has a well-defined winding the caps can follow
+    base = remove_duplicate_faces(base)
+    base = make_orientation_consistent(base)
+
+    # 4) Detect all open boundary loops. Each loop corresponds to a hole that must be closed with a cap.
     loops = extract_boundary_loops(base)
 
     if not loops:
@@ -1032,10 +1278,10 @@ def create_caps(args):
             out_cap = pv.PolyData()
             return out_cap
         else:
-            # No openings → ensure normals are consistent and return.
-            return base.copy().compute_normals(auto_orient_normals=True, inplace=False)
+            # No openings → orient outward and return.
+            return orient_outward(base).compute_normals(consistent_normals=False, inplace=False)
 
-    # 4) Build a cap for each boundary loop. Optionally export debug
+    # 5) Build a cap for each boundary loop. Optionally export debug
     caps = []
     i = 1
     for loop in loops:
@@ -1053,11 +1299,13 @@ def create_caps(args):
     if args.capsOnly:
         return cap
 
-    # 5) merge all generated caps into the base mesh to form a fully closed watertight surface, then recompute normals.
+    # 6) merge all generated caps into the base mesh to form a fully closed watertight surface, then recompute normals.
+    # Caps are wound against the mesh by construction, so VTK must not reorder faces: it would
+    # propagate across non-manifold edges and flip whole regions. Only the global orientation is fixed.
     out = base.copy()
     for cap in caps:
         out = out.merge(cap, merge_points=True)
-    out = out.compute_normals(auto_orient_normals=True, inplace=False)
+    out = orient_outward(out).compute_normals(consistent_normals=False, inplace=False)
 
     return out
 
