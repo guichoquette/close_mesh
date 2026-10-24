@@ -61,7 +61,7 @@ def close_one(input_path: str, output_path: str, mesh_filter: float) -> dict:
             watertight, volume = close_mesh_holes(args)
         row["watertight"] = watertight
         row["volume"] = f"{volume:.6e}" if volume is not None else ""
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - one failing epoch must not stop the batch
         row["watertight"] = False
         row["volume"] = ""
         row["error"] = f"{type(error).__name__}: {error}"
