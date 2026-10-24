@@ -31,8 +31,8 @@ close_mesh/
 │
 ├── utils/
 │   ├── compute_volume.py                    # Script to compute the volume of a closed mesh
-│   ├── copy_color.py                        # Scalar-field transfer tool
-│   └── find_and_split_volume.py             # Debug tool to inspect individual disconnected surfaces
+│   ├── copy_colors.py                       # Scalar-field transfer tool
+│   └── find_and_split_volumes.py            # Debug tool to inspect individual disconnected surfaces
 │
 ├── batch_close_all.py                       # Closes every epoch of every specimen + results.csv
 ├── batch-extraction.sh                      # Older per-epoch script for spc-02, kept for debugging
@@ -258,13 +258,13 @@ The tests cover the side band winding, the input repairs, boundary loop extracti
 
 ---
 
-# 🎨 Scalar Transfer Tool (`copy_color.py`)
+# 🎨 Scalar Transfer Tool (`copy_colors.py`)
 
 Transfers **all per-vertex scalar arrays** from the open mesh to the newly closed mesh using **KD-Tree nearest-neighbor mapping**.
 
 ### Run
 
-python utils/copy_color.py
+python utils/copy_colors.py
 
 Output:
 
@@ -284,7 +284,7 @@ python close_opening_scripts/close_planar_hole.py \
 
 ### 2. Transfer scalar fields
 
-python utils/copy_color.py
+python utils/copy_colors.py
 
 ### 3. Visualize in CloudCompare, MeshLab, or PyVista
 
@@ -324,7 +324,7 @@ python close_opening_scripts/close_planar_hole.py \
 
 ### Example 3 — Transfer curvature/thickness fields
 
-python utils/copy_color.py \
+python utils/copy_colors.py \
  -s brain_data/sub-02_epo-01_ref-01_mesh.ply \
  -t brain_data/closed_solid/output.ply \
  -o brain_data/closed_solid/output_scalar_fields.ply
