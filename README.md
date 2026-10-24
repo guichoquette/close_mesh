@@ -1,13 +1,13 @@
 # 🧠 Brain Surface Hole Closing – Internship Project
 
-Automaticaly close an open mesh with a plane and headband. Also does a scalar-field transfer for brain meshes.
+Automatically close an open mesh with a plane and headband. Also does a color transfer for brain meshes.
 
 This project provides a full workflow to:
 
 1. **Automatically detect and close the openings of a 3D surface mesh**, with a planar cap when the opening allows it and a curved cap otherwise,
 2. **Repair the defects of scanned meshes** that prevent a clean closing (duplicated triangles, flaps, non-manifold edges, inconsistent orientation),
-3. **Copy all per-vertex scalar data** (e.g., thickness, curvature, sulcal depth) from the original open mesh to the closed mesh.
-4. **Calculate the volume of closed meshes**, it make sure the new mesh is watertight. You can compute the volume with compute_volume.py or the pyvista option
+3. **Copy the vertex colors** (e.g., a sulcal/gyral texture) from the original open mesh to the closed mesh.
+4. **Calculate the volume of closed meshes**, after making sure the new mesh is watertight. The script prints it; `utils/compute_volume.py` computes it for any closed mesh.
 
 ---
 
@@ -27,7 +27,7 @@ close_mesh/
 │   └── close_planar_hole.py                 # Main hole-closing algorithm
 │
 ├── tests/
-│   └── test_cap_orientation.py              # Unit tests of the closing pipeline
+│   └── test_close_planar_hole.py            # Unit tests of the closing pipeline
 │
 ├── utils/
 │   ├── compute_volume.py                    # Script to compute the volume of a closed mesh
@@ -37,6 +37,7 @@ close_mesh/
 ├── batch_close_all.py                       # Closes every epoch of every specimen + results.csv
 ├── batch-extraction.sh                      # Older per-epoch script for spc-02, kept for debugging
 ├── requirements.txt
+├── ruff.toml                                # Code style rules (ruff check .)
 └── README.md
 ```
 
@@ -248,27 +249,35 @@ An epoch is counted as **watertight** when the script reports `watertight=True` 
 - "Epochs with a curved cap" counts the epochs where at least one opening, often a tiny one, had no valid projection plane.
 - The planar cap, placed on the outer side of the opening, adds a small wedge of volume: this is why the largest differences are positive.
 
-### Tests
-
-```bash
-python -m unittest tests.test_cap_orientation -v
-```
-
-The tests cover the side band winding, the input repairs, boundary loop extraction (pinched boundaries), loop orientation, planar, curved and fan caps for every combination of mesh winding and loop order, the side of the cap plane, and regressions found on BraDiPho meshes.
-
 ---
 
-# 🎨 Scalar Transfer Tool (`copy_colors.py`)
+# 🧰 Utilities (`utils/`)
 
-Transfers **all per-vertex scalar arrays** from the open mesh to the newly closed mesh using **KD-Tree nearest-neighbor mapping**.
+### Scalar transfer (`copy_colors.py`)
 
-### Run
+Transfers the **vertex colors** of the open mesh (a texture is first baked into vertex colors) to the closed mesh, using **KD-Tree nearest-neighbor mapping**: cap vertices take the color of the nearest point of the original surface.
 
-python utils/copy_colors.py
+```bash
+python utils/copy_colors.py [-s SOURCE] [-t TARGET] [-o OUTPUT]
+```
 
-Output:
+Defaults: `brain_data/sub-02_epo-01_ref-01_mesh.ply` → `brain_data/closed_solid/output.ply` → `brain_data/closed_solid/output_scalar_fields.ply`.
 
-brain_data/closed_solid/output_scalar_fields.ply
+### Volume (`compute_volume.py`)
+
+Prints the signed and absolute volume of a closed mesh (divergence theorem, in double precision).
+
+```bash
+python utils/compute_volume.py [-i brain_data/closed_solid/output.ply]
+```
+
+### Disconnected parts (`find_and_split_volumes.py`)
+
+Counts the disconnected parts of a mesh and exports each one as `mesh_body_XXX.ply`, with its number of points, cells and volume.
+
+```bash
+python utils/find_and_split_volumes.py -i INPUT.ply -o OUTPUT_DIR
+```
 
 ---
 
@@ -389,6 +398,42 @@ The triangulation and debug exports scale with mesh size.
 
 - **Side-band optimization**
   Reduce long triangles by adding local remeshing.
+
+---
+
+# 🛠️ Development
+
+### Tests
+
+```bash
+python -m unittest tests.test_close_planar_hole -v
+```
+
+The tests cover the side band winding, the input repairs, boundary loop extraction (pinched boundaries), loop orientation, planar, curved and fan caps for every combination of mesh winding and loop order, the side of the cap plane, and regressions found on BraDiPho meshes.
+
+### Code style
+
+The code follows PEP 8 and documents every module and function with a [numpydoc](https://numpydoc.readthedocs.io/en/latest/format.html) docstring (PEP 257). The rules are set in `ruff.toml`:
+
+```bash
+pip install ruff
+ruff check .
+```
+
+Command line options keep their original names (`--meshFilter`, `--capsOnly`, `--seedStepFactor`, `--seedDecimator`) for compatibility.
+
+### Layout of `close_planar_hole.py`
+
+| Section | Content |
+|---|---|
+| Debug exports | `_save`, `_save_lines`, `_save_points` |
+| Mesh helpers | edge incidence, manifold patches, signed area and volume |
+| Input repair | `collapse_short_edges`, `remove_duplicate_faces`, `remove_small_flaps`, `split_non_manifold_edges`, `drop_extra_faces_on_non_manifold_edges`, `make_orientation_consistent`, `orient_outward`, `repair_input_mesh` |
+| Boundary loops | `extract_boundary_loops`, loop orientation, outward direction |
+| Planar cap | plane fit and placement, seeding, `triangulate_planar_cap`, `create_side_band`, `make_cap` |
+| Curved and fan caps | `make_curved_cap`, `make_fan_cap`, repair caps |
+| Hole-closing pipeline | `_attach_caps`, final repair passes, `create_caps`, `close_mesh_holes` |
+| Command line | `build_argparser`, `main` |
 
 ---
 

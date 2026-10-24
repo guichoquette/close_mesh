@@ -1,0 +1,23 @@
+# Code style of the project. Check with:  ruff check .
+line-length = 120
+target-version = "py310"
+
+[lint]
+select = [
+    "E", "W",   # pycodestyle (PEP 8)
+    "F",        # pyflakes
+    "I",        # import order
+    "N",        # PEP 8 naming
+    "D",        # docstrings (PEP 257)
+    "UP",       # modern Python syntax
+    "B",        # likely bugs
+]
+# Docstrings of functions returning a value may start with a noun phrase ("Number of ...")
+ignore = ["D401"]
+
+[lint.pydocstyle]
+convention = "numpy"
+
+[lint.per-file-ignores]
+# Test names and docstrings follow unittest conventions
+"tests/*" = ["D102", "D107"]

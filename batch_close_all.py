@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-batch_close_all.py
-------------------
-Close every epoch of every BraDiPho specimen found in the data folder, and
-summarise the results in a CSV file.
+Close every epoch of every BraDiPho specimen found in the data folder.
+
+The results are summarised in a CSV file.
 
 Input:  <data>/*_epo-all_dissection/bradipho_data/<specimen>/dissection/*_dissection.ply
 Output: <out>/<specimen>/<epoch>_closed.ply  (one closed mesh per epoch)
@@ -12,8 +11,11 @@ Output: <out>/<specimen>/<epoch>_closed.ply  (one closed mesh per epoch)
 Each epoch goes through `close_mesh_holes`, exactly as with the command line
 script. Epochs whose output already exists are skipped unless --overwrite.
 
-Usage:
+Usage
+-----
     python batch_close_all.py [--data brain_data] [--out brain_data/output] [--workers 4]
+
+Author: Guillaume Choquette, Université de Sherbrooke (SCIL), 2025.
 """
 
 import argparse
@@ -72,9 +74,11 @@ def close_one(input_path: str, output_path: str, mesh_filter: float) -> dict:
     return row
 
 
-def main():
+def main() -> None:
+    """Close the epochs not processed yet and write ``results.csv``."""
     parser = argparse.ArgumentParser(description="Close every epoch of every BraDiPho specimen.")
-    parser.add_argument("--data", default=str(ROOT / "brain_data"), help="Folder containing the *_epo-all_dissection folders.")
+    parser.add_argument("--data", default=str(ROOT / "brain_data"),
+                        help="Folder containing the *_epo-all_dissection folders.")
     parser.add_argument("--out", default=str(ROOT / "brain_data" / "output"), help="Output folder.")
     parser.add_argument("--workers", type=int, default=4, help="Epochs processed in parallel (default: 4).")
     parser.add_argument("--meshFilter", type=float, default=1e-5, help="Short edge collapse tolerance (default: 1e-5).")
@@ -104,7 +108,8 @@ def main():
 
     print(f"{len(epochs)} epochs found, {len(jobs)} to process with {args.workers} workers -> {out_dir}")
 
-    def write_csv():
+    def write_csv() -> None:
+        """Write all the rows known so far, sorted by specimen and epoch."""
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writeheader()
@@ -117,8 +122,12 @@ def main():
             row = future.result()
             rows[row["input"]] = row
             write_csv()  # written after each epoch, so an interrupted run keeps its results
-            status = "error: " + row["error"] if row["error"] else f"watertight={row['watertight']} volume={row['volume'] or 'N/A'}"
-            print(f"[{done}/{len(jobs)}] {row['specimen']} epo-{row['epoch']}: {status} ({row['seconds']}s)", flush=True)
+            if row["error"]:
+                status = "error: " + row["error"]
+            else:
+                status = f"watertight={row['watertight']} volume={row['volume'] or 'N/A'}"
+            print(f"[{done}/{len(jobs)}] {row['specimen']} epo-{row['epoch']}: {status} ({row['seconds']}s)",
+                  flush=True)
 
     write_csv()
     closed = sum(str(r["watertight"]) == "True" for r in rows.values())

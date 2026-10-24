@@ -1,79 +1,89 @@
+#!/usr/bin/env python3
 """
-copy_colors.py
-==============
+Transfer vertex colors from a source mesh to a target mesh without colors.
 
-Transfer vertex colors from a *source* mesh to a *target* mesh that does not
-contain any color information. The mapping is done using a nearest-neighbor
-search in 3D space (KD-Tree).
+Used to copy the colors (e.g. sulcal/gyral texture) of an original brain mesh
+to the mesh closed by `close_planar_hole.py`. Each target vertex takes the
+color of the nearest source vertex (KD-tree); a texture on the source mesh is
+first baked into vertex colors. Cap vertices thus take the color of the
+nearest point of the original surface.
 
-This script is used notably to transfer sulcal/gyral color information from an
-original brain mesh to a closed/processed mesh.
+Usage
+-----
+    python utils/copy_colors.py [-s SOURCE] [-t TARGET] [-o OUTPUT]
 
-Workflow
---------
-1. Parse command-line arguments (source mesh, target mesh, output path)
-2. Load the source mesh (trimesh), preserving visual information
-3. Ensure the source has per-vertex colors:
-    - If using textures → convert (bake) them to vertex colors
-4. Load the target mesh (without color)
-5. Build a KD-Tree on the source vertex positions
-6. For each target vertex, find the nearest source vertex
-7. Copy its RGBA color to the target
-8. Export the colorized mesh
-
-Author
-------
-Guillaume Choquette
-Université de Sherbrooke — SCIL Lab
+Author: Guillaume Choquette, Université de Sherbrooke (SCIL), 2025.
 """
-
-import trimesh
-import trimesh.visual
 
 import argparse
+
 import numpy as np
-from scipy.spatial import cKDTree
 import trimesh
+from scipy.spatial import cKDTree
 
 
-# =============================================================
-# Build the parser
-# -------------------------------------------------------------
-p = argparse.ArgumentParser(description="Transfer the color from the input file to the outputfile.")
-p.add_argument("-s", "--source", help="Input mesh.", default="./brain_data/sub-02_epo-01_ref-01_mesh.ply")
-p.add_argument("-t", "--target", help="Input mesh without colors.", default="./brain_data/closed_solid/output.ply")
-p.add_argument("-o", "--output", help="Output file.", default="./brain_data/closed_solid/output_scalar_fields.ply")
-args = p.parse_args()
+def source_vertex_colors(source: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Vertex positions and RGBA colors of the source mesh.
+
+    Parameters
+    ----------
+    source : trimesh.Trimesh
+        Mesh loaded with ``process=False`` (to keep its visual information).
+
+    Returns
+    -------
+    points : np.ndarray, shape (N, 3)
+        Vertex positions.
+    colors : np.ndarray, shape (N, 4)
+        RGBA color of each vertex; a texture is baked into vertex colors.
+    """
+    if isinstance(source.visual, trimesh.visual.texture.TextureVisuals):
+        source = source.copy()
+        source.visual = source.visual.to_color()
+    return source.vertices, source.visual.vertex_colors
 
 
-# IMPORTANT : mets process=False pour ne pas perdre les infos visuelles
-src = trimesh.load(args.source, process=False)
+def transfer_colors(source_points: np.ndarray, source_colors: np.ndarray, target_points: np.ndarray) -> np.ndarray:
+    """
+    Color of the nearest source vertex for each target vertex.
 
-# Si on a une texture (material), trimesh utilise TextureVisuals
-if isinstance(src.visual, trimesh.visual.texture.TextureVisuals):
-    # "Bake" la texture en couleurs par sommet
-    src_colored = src.copy()
-    src_colored.visual = src.visual.to_color()  # convertit en VertexColorVisuals
-else:
-    src_colored = src  # il y a déjà des vertex colors
+    Parameters
+    ----------
+    source_points : np.ndarray, shape (N, 3)
+        Source vertex positions.
+    source_colors : np.ndarray, shape (N, 4)
+        Source RGBA colors.
+    target_points : np.ndarray, shape (M, 3)
+        Target vertex positions.
 
-src_pts = src_colored.vertices
-src_colors = src_colored.visual.vertex_colors  # (N, 4) en RGBA
+    Returns
+    -------
+    colors : np.ndarray, shape (M, 4)
+        RGB of the nearest source vertex, fully opaque.
+    """
+    _, nearest = cKDTree(source_points).query(target_points, k=1)
+    rgb = source_colors[nearest, :3].astype(np.uint8)
+    return np.hstack([rgb, np.full((len(rgb), 1), 255, dtype=np.uint8)])
 
-# Mesh de sortie (celui que tu produis avec ton code de fermeture)
-dst = trimesh.load(args.target, process=False)
-dst_pts = dst.vertices
 
-# KD-tree sur le mesh source
-tree = cKDTree(src_pts)
-dist, idx = tree.query(dst_pts, k=1)
+def main() -> None:
+    """Copy the colors of the source mesh to the target mesh and export the result."""
+    parser = argparse.ArgumentParser(description="Transfer the vertex colors of a mesh to another mesh.")
+    parser.add_argument("-s", "--source", default="./brain_data/sub-02_epo-01_ref-01_mesh.ply",
+                        help="Mesh with colors or texture.")
+    parser.add_argument("-t", "--target", default="./brain_data/closed_solid/output.ply",
+                        help="Mesh without colors.")
+    parser.add_argument("-o", "--output", default="./brain_data/closed_solid/output_scalar_fields.ply",
+                        help="Output file.")
+    args = parser.parse_args()
 
-# On récupère les couleurs des points les plus proches
-rgb = src_colors[idx, :3]
-alpha = 255 * np.ones((rgb.shape[0], 1), dtype=np.uint8)
-dst_colors = np.hstack([rgb.astype(np.uint8), alpha])
+    source_points, source_colors = source_vertex_colors(trimesh.load(args.source, process=False))
+    target = trimesh.load(args.target, process=False)
+    target.visual.vertex_colors = transfer_colors(source_points, source_colors, target.vertices)
+    target.export(args.output)
+    print(f"Output written to: {args.output}")
 
-dst.visual.vertex_colors = dst_colors
 
-dst.export(args.output)
-print(f"Output writen to : {args.output}")
+if __name__ == "__main__":
+    main()

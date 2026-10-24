@@ -1,118 +1,76 @@
+#!/usr/bin/env python3
 """
-compute_volume.py
------------------
-Utility functions to compute the **signed volume** of a closed triangular mesh.
+Compute the signed volume of a closed triangle mesh.
 
-This module implements a classical divergence-theorem–based approach:
-for each triangular face (v0, v1, v2), the quantity
-    v0 · (v1 × v2)
-contributes to the oriented volume. Summing all contributions and dividing
-by 6 yields the total signed volume of the mesh.
+For each triangle (v0, v1, v2), the divergence theorem gives the contribution
+v0 · (v1 × v2) / 6 to the volume enclosed by the surface. The sign tells the
+orientation: positive when the normals point outward, negative when they
+point inward; the absolute value is the enclosed volume. The result is only
+meaningful for a watertight, consistently oriented surface.
 
-Signed vs absolute volume
--------------------------
-- The **sign** indicates mesh orientation:
-    * positive  → outward-facing normals
-    * negative  → inward-facing normals
-- The **absolute** value corresponds to the geometric enclosed volume.
-
-Functions
----------
-compute_signed_volume(vertices, faces)
-    Computes signed volume from numpy arrays of vertices and triangular faces.
-
-compute_signed_volume_ply(path)
-    Loads a PLY file using PyVista, triangulates it if needed, extracts raw
-    vertices and faces, and returns the signed volume.
-
-Example
--------
-Running this file as a script prints the signed and absolute volume of:
-    ./brain_data/closed_solid/output.ply
-
-Notes
+Usage
 -----
-- The input mesh *must* represent a watertight, consistently oriented surface
-  for the signed volume to be meaningful.
-- PyVista face arrays are stored as: [3, i, j, k, 3, i, j, k, ...].
-  This module reformats them into an (M × 3) integer array.
+    python utils/compute_volume.py [-i brain_data/closed_solid/output.ply]
 
-Author: Guillaume Choquette (Stage SCIL 2025)
+Author: Guillaume Choquette, Université de Sherbrooke (SCIL), 2025.
 """
+
+import argparse
+from pathlib import Path
 
 import numpy as np
 import pyvista as pv
 
-def compute_signed_volume(vertices, faces):
+
+def compute_signed_volume(vertices: np.ndarray, faces: np.ndarray) -> float:
     """
-    Compute the **signed volume** of a closed triangular mesh using a
-    divergence-theorem formulation.
+    Signed volume of a closed triangle mesh.
 
     Parameters
     ----------
-    vertices : (N, 3) ndarray of float
-        Array of 3D vertex positions.
-
-    faces : (M, 3) ndarray of int
-        Array of triangular faces, each entry being indices (i, j, k)
-        into the vertex array.
+    vertices : np.ndarray, shape (N, 3)
+        Vertex positions.
+    faces : np.ndarray, shape (M, 3)
+        Vertex indices of each triangle.
 
     Returns
     -------
-    float
-        Signed volume of the mesh. Orientation determines the sign:
-        positive = outward normals, negative = inward normals.
+    volume : float
+        Signed volume: positive for outward normals, negative for inward normals.
     """
+    tri = np.asarray(vertices, dtype=np.float64)[np.asarray(faces)]
+    return float(np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2])).sum() / 6.0)
 
-    V = 0.0
 
-    # Iterate over all triangles
-    for f in faces:
-        i, j, k = f
-        v0 = vertices[i]
-        v1 = vertices[j]
-        v2 = vertices[k]
-
-        # Contribution of the triangle to the signed volume:
-        V += np.dot(v0, np.cross(v1, v2))   # v0 · (v1 × v2)
-
-    return V / 6.0
-
-def compute_signed_volume_ply(path):
+def compute_signed_volume_ply(path: str | Path) -> float:
     """
-    Load a surface mesh from a PLY file and compute its signed volume.
-
-    The mesh is triangulated if necessary before volume evaluation.
+    Load a mesh file (triangulated if needed) and compute its signed volume.
 
     Parameters
     ----------
     path : str or Path
-        Path to the PLY file.
+        Mesh file (PLY, VTK, OBJ, STL, ...).
 
     Returns
     -------
-    float
-        Signed volume of the loaded mesh.
+    volume : float
+        Signed volume of the mesh.
     """
+    mesh = pv.read(path).triangulate()
+    return compute_signed_volume(mesh.points, mesh.faces.reshape(-1, 4)[:, 1:])
 
-    mesh = pv.read(path)
 
-    # Ensure the mesh is fully triangulated.
-    mesh = mesh.triangulate()
+def main() -> None:
+    """Print the signed and absolute volume of the mesh given on the command line."""
+    parser = argparse.ArgumentParser(description="Compute the signed volume of a closed triangle mesh.")
+    parser.add_argument("-i", "--input", default="./brain_data/closed_solid/output.ply",
+                        help="Closed mesh (default: ./brain_data/closed_solid/output.ply).")
+    args = parser.parse_args()
 
-    # Extract vertex coordinates
-    vertices = mesh.points
+    volume = compute_signed_volume_ply(args.input)
+    print("Signed volume:", volume)
+    print("Absolute volume:", abs(volume))
 
-    # Extract triangular faces from PyVista's compact format:
-    # PyVista stores faces as: [3, i, j, k, 3, i, j, k, ...]
-    raw = mesh.faces.reshape(-1, 4)
-    faces = raw[:, 1:4]
 
-    return compute_signed_volume(vertices, faces)
-
-# -------------------------------------------------------------------------
-# Script execution (example)
-# -------------------------------------------------------------------------
-vol = compute_signed_volume_ply("./brain_data/closed_solid/output.ply")
-print("Signed volume:", vol)
-print("Absolute volume:", abs(vol))
+if __name__ == "__main__":
+    main()
