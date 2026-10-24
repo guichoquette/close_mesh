@@ -10,9 +10,11 @@ from close_opening_scripts.close_planar_hole import (
     _find_projection_plane,
     _orient_loop_against_mesh,
     createSideBand,
+    drop_extra_faces_on_non_manifold_edges,
     extract_boundary_loops,
     make_cap,
     make_curved_cap,
+    make_fan_cap,
     make_orientation_consistent,
     orient_outward,
     remove_duplicate_faces,
@@ -137,6 +139,19 @@ class SplitNonManifoldEdgeTests(unittest.TestCase):
         self.assertEqual(split.n_points, mesh.n_points + 2)
         self.assertEqual(directed_edge_conflicts(split), 0)
         self.assertAlmostEqual(signed_volume(split), signed_volume(mesh))
+
+    def test_keeps_one_consistent_pair_on_an_edge_that_cannot_be_split(self):
+        points = np.array([[0, 0, 0], [1, 0, 0], [0.5, 1, 0.2], [0.5, 0.3, 1],
+                           [0.5, -1, 0.2], [0.5, -0.3, -1]], dtype=float)
+        faces = np.vstack([outward_tetrahedron(points, (0, 1, 2, 3)), outward_tetrahedron(points, (0, 1, 4, 5))])
+        mesh = pv.PolyData(points, np.hstack([np.full((len(faces), 1), 3), faces]).ravel())
+        kept = drop_extra_faces_on_non_manifold_edges(mesh)
+
+        edges = Counter(tuple(sorted((int(f[k]), int(f[(k + 1) % 3]))))
+                        for f in kept.faces.reshape(-1, 4)[:, 1:] for k in range(3))
+        self.assertEqual(kept.n_cells, mesh.n_cells - 2)
+        self.assertEqual(edges[(0, 1)], 2)
+        self.assertEqual(directed_edge_conflicts(kept), 0)
 
 
 class PlanarTriangulationTests(unittest.TestCase):
@@ -271,6 +286,18 @@ class CurvedCapTests(MakeCapTests):
 
     def assert_closes_consistently(self, mesh, loop):
         cap = make_curved_cap(mesh, loop, self.args)
+        self.assertEqual(directed_edge_conflicts(cap), 0)
+
+        closed = mesh.merge(cap, merge_points=True).clean(polys_to_lines=False)
+        self.assertEqual(open_edges(closed), 0)
+        self.assertEqual(directed_edge_conflicts(closed), 0)
+
+
+class FanCapTests(MakeCapTests):
+    """Same guarantees for the fan cap of the final passes."""
+
+    def assert_closes_consistently(self, mesh, loop):
+        cap = make_fan_cap(mesh, loop)
         self.assertEqual(directed_edge_conflicts(cap), 0)
 
         closed = mesh.merge(cap, merge_points=True).clean(polys_to_lines=False)

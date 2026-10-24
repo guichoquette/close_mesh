@@ -148,9 +148,20 @@ Scanned dissection meshes contain defects that make the boundary ambiguous. They
   1. The loop is mapped onto a unit disk by arc length, seeds are placed inside the polygon, and the disk is triangulated (Qhull).
   2. Loop vertices keep their exact position; interior vertices are placed by **harmonic interpolation** (Laplace equation), which gives a smooth membrane spanning the loop.
 
-**5. Assemble and check**
+**5. Assemble**
 
-- Caps are attached to the mesh **by vertex index** (`_attach_caps`), never by merging coincident points, which would join again the vertices duplicated in step 2.
+- Every cap starts with its loop vertices, in loop order. Caps are attached to the mesh **by vertex index** (`_attach_caps`), never by merging coincident points, which would join again the vertices duplicated in step 2 (a loop may even go through two coincident copies of a vertex).
+
+**6. Final repair passes**
+
+On the capped mesh, up to three passes fix what step 2 had to leave:
+
+- `split_non_manifold_edges` again: the caps are attached, so the vertices that were on a boundary can now be split safely.
+- `drop_extra_faces_on_non_manifold_edges`: some non-manifold edges cannot be split (the faces around them reconnect around both vertices: a small fold or pocket of the scan). Only the two faces that best continue the surface are kept.
+- The tiny holes this opens are capped (`_make_repair_cap`): the regular cap, or a fan around the hole centroid (`make_fan_cap`) when the regular cap would link two loop vertices already linked in the mesh.
+
+**7. Check**
+
 - Normals are computed without letting VTK reorder faces.
 - The result is **watertight** when it has no boundary edge and no non-manifold edge; only then is the volume computed and printed.
 
@@ -169,26 +180,27 @@ The script prints `watertight=True  volume=...` or `watertight=False  volume=N/A
 
 All 130 epochs of the 12 dissected specimens available on BraDiPho were closed with `--meshFilter 1e-5` (results of 2026-10-24).
 
-An epoch is counted as **watertight** when the script reports `watertight=True` and therefore gives a volume (no boundary edge and no non-manifold edge).
+An epoch is counted as **watertight** when the script reports `watertight=True` and therefore gives a volume (no boundary edge and no non-manifold edge). The volume difference is measured against a reference where every hole is closed by a flat fan to its loop centroid.
 
-| Specimen | Epochs | Watertight (volume given) | Epochs with a curved cap | Not watertight: epoch (open edges / non-manifold edges) |
-|---|---|---|---|---|
-| spc-01 | 11 | 10 | 1 | epo-04 (0/1) |
-| spc-02 | 10 | 8 | 0 | epo-02 (0/1), epo-04 (0/1) |
-| spc-04 | 10 | 8 | 3 | epo-01 (2/2), epo-03 (0/2) |
-| spc-06 | 10 | 8 | 1 | epo-03 (0/1), epo-04 (0/1) |
-| spc-07 | 12 | 4 | 8 | epo-01 (0/1), epo-03 (0/2), epo-05 (0/1), epo-06 (0/1), epo-07 (0/2), epo-09 (0/2), epo-09b (0/1), epo-10b (0/1) |
-| spc-10 | 12 | 6 | 3 | epo-03 (0/1), epo-07 (0/3), epo-07b (0/1), epo-09 (2/2), epo-10 (0/2), epo-10b (0/1) |
-| spc-12 | 12 | 5 | 5 | epo-02 (0/2), epo-05 (0/1), epo-06 (0/2), epo-07 (0/1), epo-07b (0/1), epo-09b (0/1), epo-10b (0/1) |
-| spc-15 | 14 | 6 | 4 | epo-01 (0/1), epo-02 (0/3), epo-04 (0/1), epo-06 (0/1), epo-08 (0/1), epo-09 (0/1), epo-10 (0/1), epo-12 (0/1) |
-| spc-16 | 12 | 4 | 0 | epo-02 (0/3), epo-03 (0/3), epo-05 (0/1), epo-07 (0/1), epo-08 (0/3), epo-09 (0/2), epo-10 (0/1), epo-11 (0/2) |
-| spc-17 | 7 | 2 | 2 | epo-01 (0/1), epo-02 (3/3), epo-03 (0/2), epo-07 (0/1), epo-08 (0/1) |
-| spc-18 | 8 | 3 | 0 | epo-02 (0/1), epo-04 (0/1), epo-05 (0/1), epo-06 (0/1), epo-08 (0/1) |
-| spc-19 | 12 | 5 | 1 | epo-02 (0/1), epo-03 (2/5), epo-04 (0/1), epo-06 (0/1), epo-08 (0/1), epo-10 (0/1), epo-12 (0/1) |
-| **Total** | **130** | **69** | **28** | **61** |
+| Specimen | Epochs | Watertight (volume given) | Epochs with a curved cap | Mean volume difference | Max volume difference |
+|---|---|---|---|---|---|
+| spc-01 | 11 | 11 | 1 | 1.6 % | 3.4 % |
+| spc-02 | 10 | 10 | 0 | 0.9 % | 3.2 % |
+| spc-04 | 10 | 10 | 3 | 0.1 % | 0.2 % |
+| spc-06 | 10 | 10 | 3 | 0.2 % | 1.2 % |
+| spc-07 | 12 | 12 | 8 | 0.2 % | 0.6 % |
+| spc-10 | 12 | 12 | 4 | 0.3 % | 0.6 % |
+| spc-12 | 12 | 12 | 7 | 0.3 % | 0.7 % |
+| spc-15 | 14 | 14 | 4 | 0.6 % | 2.2 % |
+| spc-16 | 12 | 12 | 2 | 0.1 % | 0.3 % |
+| spc-17 | 7 | 7 | 3 | 0.2 % | 0.3 % |
+| spc-18 | 8 | 8 | 0 | 0.1 % | 0.4 % |
+| spc-19 | 12 | 12 | 3 | 0.1 % | 0.3 % |
+| **Total** | **130** | **130** | **38** | **0.4 %** | **3.4 %** |
 
-- Of the 61 epochs that are not watertight, 57 have **no open edge at all**: only 1 to 3 non-manifold edges remain, inherited from the input mesh (edges with both ends on a boundary, which are not split on purpose).
-- Volume check: each closed volume was compared with a reference where every hole is closed by a flat fan to the loop centroid. The mean difference is **0.4 %**, and no epoch differs by more than **3.4 %** (the planar cap, on the outer side, adds a small wedge).
+- Every epoch is watertight and gets a volume. One epoch (spc-17 epo-05) keeps 5 edges with an inconsistent orientation, which may slightly affect its volume.
+- "Epochs with a curved cap" counts the epochs where at least one opening, often a tiny one, had no valid projection plane.
+- The planar cap, placed on the outer side of the opening, adds a small wedge of volume: this is why the largest differences are positive.
 
 ### Tests
 
@@ -196,7 +208,7 @@ An epoch is counted as **watertight** when the script reports `watertight=True` 
 python -m unittest tests.test_cap_orientation -v
 ```
 
-The tests cover the side band winding, the input repairs, boundary loop extraction (pinched boundaries), loop orientation, planar and curved caps for every combination of mesh winding and loop order, the side of the cap plane, and regressions found on BraDiPho meshes.
+The tests cover the side band winding, the input repairs, boundary loop extraction (pinched boundaries), loop orientation, planar, curved and fan caps for every combination of mesh winding and loop order, the side of the cap plane, and regressions found on BraDiPho meshes.
 
 ---
 
@@ -275,27 +287,27 @@ python utils/copy_color.py \
 
 # ⚠️ Limitations / Known Issues
 
-### 🔹 1. Remaining non-manifold edges
-
-About half of the BraDiPho dissection epochs still end with 1 to 3 non-manifold edges inherited from the input mesh, where both ends of the edge lie on a boundary. The script then reports `watertight=False` and gives no volume, even though the mesh is otherwise closed (see the results table).
-
-### 🔹 2. Open boundary chains
-
-When a non-manifold edge cuts a boundary into an open chain, the chain is closed between its two ends by an edge that does not exist in the mesh. This leaves 1 to 3 open edges on a few epochs.
-
-### 🔹 3. Warped openings get a curved cap
+### 🔹 1. Warped openings get a curved cap
 
 The planar cap needs the opening to project onto its best-fit plane as a simple (non self-intersecting) polygon. When it does not, the opening is closed with a curved (harmonic) cap instead and a `WARNING` is printed. Such a cap is not flat, which slightly changes how the closed volume is defined at that opening.
 
 The planar cap is placed on the outer side of the opening, at its highest point; it therefore adds a small wedge of volume (typically under 1 %, up to ~3 % on very warped openings).
 
+### 🔹 2. Input defects are repaired locally
+
+Small flaps and the extra faces of non-manifold edges that cannot be split are removed, and the holes this opens are capped. These are a few triangles per epoch, but the output is not strictly the input surface plus caps.
+
+### 🔹 3. Duplicated vertices in the output
+
+Non-manifold edges are repaired by duplicating vertices at the same position. The output must not be cleaned with point merging (e.g. `clean()` with default options), or the repaired sheets would be joined again.
+
 ### 🔹 4. Sensitive to boundary noise
 
 Meshes with extremely short or irregular edges should be pre-filtered using `--meshFilter`.
 
-### 🔹 5. Duplicated vertices in the output
+### 🔹 5. Processing time
 
-Non-manifold edges are repaired by duplicating vertices at the same position. The output must not be cleaned with point merging (e.g. `clean()` with default options), or the repaired sheets would be joined again.
+The repair passes are written in Python: a BraDiPho epoch takes from a few seconds to about 6 minutes (median under a minute).
 
 ### 🔹 6. Scalar transfer uses nearest-neighbor
 
@@ -312,11 +324,11 @@ The triangulation and debug exports scale with mesh size.
 
 ### 🔧 Algorithmic Improvements
 
-- **Split the last non-manifold edges after capping**
-  Once the caps are attached, no vertex lies on a boundary any more, so the non-manifold edges left on purpose could be split safely. This is the main step to make the remaining epochs watertight.
+- **Visual validation of the curved caps**
+  The results above are checked numerically; the curved caps (38 epochs) should also be inspected visually.
 
-- **Close open boundary chains through the mesh**
-  Close a chain cut by a non-manifold edge along that edge instead of with a new edge.
+- **Faster repair passes**
+  Vectorize the orientation propagation and the non-manifold repairs, which dominate the processing time.
 
 - **Adaptive seeding strategies**
   Increase sampling density near the boundary, reduce it inside.

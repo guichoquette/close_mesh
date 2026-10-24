@@ -356,6 +356,84 @@ def remove_small_flaps(mesh: pv.PolyData, max_faces: int = 20) -> pv.PolyData:
     return _faces_to_polydata(mesh.points, faces[keep])
 
 
+def _fan_around_edge(faces: np.ndarray, points: np.ndarray, fs: np.ndarray, a: int, b: int):
+    """
+    Sort the faces incident to edge (a, b) by angle around it.
+
+    Returns
+    -------
+    fan : np.ndarray
+        Face indices sorted by angle.
+    angles : np.ndarray
+        Their angle around the edge, in radians.
+    forward : dict
+        For each face, whether it traverses the edge as a -> b.
+    """
+    axis = points[b] - points[a]
+    axis = axis / (np.linalg.norm(axis) + 1e-30)
+    angles = []
+    ref = ref2 = None
+    for f in fs:
+        apex = points[next(v for v in faces[f] if v != a and v != b)] - points[a]
+        radial = apex - (apex @ axis) * axis
+        if ref is None:
+            ref = radial / (np.linalg.norm(radial) + 1e-30)
+            ref2 = np.cross(axis, ref)
+        angles.append(np.arctan2(radial @ ref2, radial @ ref))
+    order = np.argsort(angles)
+    fan = np.asarray(fs)[order]
+    forward = {int(f): faces[f, (list(faces[f]).index(a) + 1) % 3] == b for f in fan}
+    return fan, np.asarray(angles)[order], forward
+
+
+def drop_extra_faces_on_non_manifold_edges(mesh: pv.PolyData) -> pv.PolyData:
+    """
+    On each non-manifold edge, keep only the two faces that best continue the surface.
+
+    Some non-manifold edges cannot be split: the faces around them are
+    connected again around both end vertices (a small fold or pocket of the
+    scan). On such an edge, the kept pair is the one that traverses the edge
+    in opposite directions (consistent orientation) and is the closest to
+    flat; the other faces are removed. The small holes this opens are capped
+    afterwards.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Triangulated mesh.
+
+    Returns
+    -------
+    mesh : pv.PolyData
+        Mesh without the extra faces.
+    """
+    faces = mesh.faces.reshape(-1, 4)[:, 1:]
+    points = np.asarray(mesh.points)
+    key, order, start, counts = _edge_incidence(faces, mesh.n_points)
+    nm = np.where(counts > 2)[0]
+    if len(nm) == 0:
+        return mesh
+
+    drop = set()
+    for e in nm:
+        rows = order[start[e]:start[e] + counts[e]]
+        a, b = divmod(int(key[rows[0]]), mesh.n_points)
+        fan, angles, forward = _fan_around_edge(faces, points, rows // 3, a, b)
+        best = None
+        for i in range(len(fan)):
+            for j in range(i + 1, len(fan)):
+                opening = abs(angles[i] - angles[j])
+                opening = min(opening, 2 * np.pi - opening)  # pi for a flat sheet
+                score = (forward[int(fan[i])] != forward[int(fan[j])], opening)
+                if best is None or score > best[0]:
+                    best = (score, {int(fan[i]), int(fan[j])})
+        drop |= {int(f) for f in fan} - best[1]
+
+    keep = np.ones(len(faces), dtype=bool)
+    keep[list(drop)] = False
+    return _faces_to_polydata(mesh.points, faces[keep])
+
+
 def split_non_manifold_edges(mesh: pv.PolyData) -> pv.PolyData:
     """
     Separate the sheets of surface that meet along non-manifold edges.
@@ -395,21 +473,8 @@ def split_non_manifold_edges(mesh: pv.PolyData) -> pv.PolyData:
     paired = []
     for e in nm:
         rows = order[start[e]:start[e] + counts[e]]
-        fs = rows // 3
         a, b = divmod(int(key[rows[0]]), n_points)
-        axis = points[b] - points[a]
-        axis = axis / (np.linalg.norm(axis) + 1e-30)
-        angles = []
-        ref = ref2 = None
-        for f in fs:
-            apex = points[next(v for v in faces[f] if v != a and v != b)] - points[a]
-            radial = apex - (apex @ axis) * axis
-            if ref is None:
-                ref = radial / (np.linalg.norm(radial) + 1e-30)
-                ref2 = np.cross(axis, ref)
-            angles.append(np.arctan2(radial @ ref2, radial @ ref))
-        fan = fs[np.argsort(angles)]
-        forward = {int(f): faces[f, (list(faces[f]).index(a) + 1) % 3] == b for f in fan}
+        fan, _, forward = _fan_around_edge(faces, points, rows // 3, a, b)
 
         # Two ways to pair angular neighbours; keep the one with most consistently oriented pairs
         best = None
@@ -1324,6 +1389,33 @@ def make_curved_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
     return cap
 
 
+def make_fan_cap(mesh: pv.PolyData, loop_indices) -> pv.PolyData:
+    """
+    Close a small opening with a fan of triangles around a new vertex at its centroid.
+
+    Used for the tiny holes opened by the final repair passes. Unlike the
+    other caps, it never adds an edge between two loop vertices, which could
+    recreate the non-manifold edge the pass has just removed.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Mesh containing the opening.
+    loop_indices : np.ndarray
+        Indices of the boundary loop vertices in `mesh.points`.
+
+    Returns
+    -------
+    cap : pv.PolyData
+        Fan cap, wound opposite to the mesh along the shared boundary.
+    """
+    loop_indices = _orient_loop_against_mesh(mesh, loop_indices)
+    loop_points = np.asarray(mesh.points[loop_indices], dtype=float)
+    n_loop = len(loop_indices)
+    faces = np.column_stack([np.arange(n_loop), (np.arange(n_loop) + 1) % n_loop, np.full(n_loop, n_loop)])
+    return _faces_to_polydata(np.vstack([loop_points, loop_points.mean(axis=0)]), faces)
+
+
 def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
     """
     Generate a triangulated cap that closes a single opening on a 3D mesh.
@@ -1411,12 +1503,21 @@ def make_cap(mesh: pv.PolyData, loop_indices, args: argparse.Namespace):
     cap = _orient_cap_faces_like_loop(cap, planePoint, u_hat, v_hat, poly_uv)
 
     # 10) Build side band between 3D loop and its projection
+    loopOpeningPoints = np.asarray(loopOpeningPoints, dtype=float)
     sideBand = createSideBand(loopOpeningPoints, projectedLoop)
 
-    # 11) Merge cap interior and side band
-    # The side band comes first so that merged points keep the exact mesh loop coordinates
-    cap_merged = sideBand.merge(cap, merge_points=True, tolerance=1e-6)
-    return _remove_degenerate_faces(cap_merged)
+    # 11) Merge cap interior and side band by index: points are [3D loop, projected loop, seeds],
+    #     so the cap starts with the loop vertices in loop order (relied upon by `_attach_caps`).
+    #     A projected point is merged only with its own loop point, when they coincide.
+    n_loop = len(loopOpeningPoints)
+    side_faces = sideBand.faces.reshape(-1, 4)[:, 1:]
+    inner_faces = cap.faces.reshape(-1, 4)[:, 1:] + n_loop
+    points = np.vstack([np.asarray(loopOpeningPoints, dtype=float), np.asarray(cap.points, dtype=float)])
+    faces = np.vstack([side_faces, inner_faces])
+    on_plane = np.where(np.linalg.norm(loopOpeningPoints - projectedLoop, axis=1) < 1e-6)[0]
+    remap = np.arange(len(points))
+    remap[on_plane + n_loop] = on_plane
+    return _remove_degenerate_faces(_faces_to_polydata(points, remap[faces]))
 
 
 # --------------------------- IO helpers ---------------------------
@@ -1499,14 +1600,46 @@ def _save(poly_data: pv.PolyData, fileName, args: argparse.Namespace):
 
 # --------------------------- Hole-closing pipeline ---------------------------
 
+def _make_repair_cap(mesh: pv.PolyData, loop, args: argparse.Namespace) -> pv.PolyData:
+    """
+    Cap for a hole opened by the final repair passes.
+
+    The regular cap is used, unless it fails or links two loop vertices that
+    are already linked by a mesh edge (it would recreate the non-manifold edge
+    just removed); a fan cap around the centroid is used instead.
+    """
+    try:
+        cap = make_cap(mesh, loop, args)
+    except ValueError:
+        return make_fan_cap(mesh, loop)
+
+    # Caps start with the loop vertices, in oriented loop order (see `_attach_caps`)
+    loop = _orient_loop_against_mesh(mesh, np.asarray(loop, dtype=int))
+    cap_to_mesh = [int(loop[j]) if j < len(loop) else None for j in range(cap.n_points)]
+    faces = mesh.faces.reshape(-1, 4)[:, 1:]
+    near = faces[np.isin(faces, loop).any(axis=1)]
+    mesh_edges = {tuple(sorted((int(f[k]), int(f[(k + 1) % 3])))) for f in near for k in range(3)}
+    for f in cap.faces.reshape(-1, 4)[:, 1:]:
+        for k in range(3):
+            a, b = cap_to_mesh[f[k]], cap_to_mesh[f[(k + 1) % 3]]
+            if a is not None and b is not None and (min(a, b), max(a, b)) in mesh_edges:
+                position = {int(v): i for i, v in enumerate(loop)}
+                if (position[a] - position[b]) % len(loop) not in (1, len(loop) - 1):
+                    return make_fan_cap(mesh, loop)
+    return cap
+
+
 def _attach_caps(mesh: pv.PolyData, loops, caps) -> pv.PolyData:
     """
     Add caps to the mesh, gluing each one on the vertices of its own loop.
 
-    A cap's loop vertices carry the exact coordinates of the mesh loop
-    vertices; they are matched against that loop only, by position, and
-    replaced by the mesh indices. Merging all coincident points instead would
-    also join the vertices duplicated by `split_non_manifold_edges`.
+    Every cap starts with the loop vertices, in the order given by
+    `_orient_loop_against_mesh`, with their exact coordinates; they are
+    replaced by the mesh indices by position. This also works when a loop
+    goes through two coincident copies of a vertex (duplicated by
+    `split_non_manifold_edges`), which merging coincident points would join.
+    A cap that does not start with its loop falls back to matching by
+    coordinates, against that loop only.
 
     Parameters
     ----------
@@ -1526,23 +1659,31 @@ def _attach_caps(mesh: pv.PolyData, loops, caps) -> pv.PolyData:
     faces = [mesh.faces.reshape(-1, 4)[:, 1:]]
     n_total = mesh.n_points
     for loop, cap in zip(loops, caps):
-        loop = np.asarray(loop, dtype=int)
-        lookup = {tuple(p): int(i) for p, i in zip(np.asarray(mesh.points[loop], dtype=float), loop)}
+        loop = _orient_loop_against_mesh(mesh, np.asarray(loop, dtype=int))
+        n_loop = len(loop)
+        loop_points = np.asarray(mesh.points[loop], dtype=float)
         cap_points = np.asarray(cap.points, dtype=float)
         index = np.empty(len(cap_points), dtype=np.int64)
-        new = []
-        for j, p in enumerate(cap_points):
-            i = lookup.get(tuple(p))
-            if i is None:
-                index[j] = n_total + len(new)
-                new.append(p)
-            else:
-                index[j] = i
-        if new:
-            points.append(np.array(new))
+        if len(cap_points) >= n_loop and np.array_equal(cap_points[:n_loop], loop_points):
+            index[:n_loop] = loop
+            rest = np.arange(n_loop, len(cap_points))
+            index[rest] = n_total + np.arange(len(rest))
+            new = cap_points[rest]
+        else:
+            lookup = {tuple(p): int(i) for p, i in zip(loop_points, loop)}
+            new = []
+            for j, p in enumerate(cap_points):
+                i = lookup.get(tuple(p))
+                if i is None:
+                    index[j] = n_total + len(new)
+                    new.append(p)
+                else:
+                    index[j] = i
+            new = np.array(new).reshape(-1, 3)
+        points.append(new)
         n_total += len(new)
         faces.append(index[cap.faces.reshape(-1, 4)[:, 1:]])
-    return _faces_to_polydata(np.vstack(points), np.vstack(faces))
+    return _remove_degenerate_faces(_faces_to_polydata(np.vstack(points), np.vstack(faces)))
 
 
 def create_caps(args):
@@ -1626,7 +1767,23 @@ def create_caps(args):
     # Caps are wound against the mesh by construction, so VTK must not reorder faces: it would
     # propagate across non-manifold edges and flip whole regions. Only the global orientation is fixed.
     out = _attach_caps(base, cap_loops, caps)
-    out = orient_outward(out).compute_normals(consistent_normals=False, inplace=False)
+
+    # 7) Final passes on the capped mesh:
+    #    - split the non-manifold edges left on purpose in step 3 (both ends on a boundary): the
+    #      caps are attached, so their vertices are no longer on a boundary;
+    #    - on the non-manifold edges that still cannot be split, keep the best pair of faces;
+    #    - cap the small holes this opens, and those left by open boundary chains.
+    out = orient_outward(make_orientation_consistent(split_non_manifold_edges(out)))
+    for _ in range(3):
+        if np.all(_edge_incidence(out.faces.reshape(-1, 4)[:, 1:], out.n_points)[3] == 2):
+            break  # every edge shared by exactly two faces: closed and manifold
+        out = orient_outward(make_orientation_consistent(drop_extra_faces_on_non_manifold_edges(out)))
+        loops = [loop for loop in extract_boundary_loops(out) if loop.shape[0] > 2]
+        if not loops:
+            break
+        caps = [_make_repair_cap(out, loop, args) for loop in loops]
+        out = orient_outward(make_orientation_consistent(_attach_caps(out, loops, caps)))
+    out = out.compute_normals(consistent_normals=False, inplace=False)
 
     return out
 
