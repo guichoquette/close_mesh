@@ -427,13 +427,15 @@ Command line options keep their original names (`--meshFilter`, `--capsOnly`, `-
 | Section | Content |
 |---|---|
 | Debug exports | `_save`, `_save_lines`, `_save_points` |
-| Mesh helpers | edge incidence, manifold patches, signed area and volume |
+| Mesh helpers | edge incidence, manifold patches, signed area and volume; `_get_bool_attr_or_method` (not used at the moment) |
 | Input repair | `collapse_short_edges`, `remove_duplicate_faces`, `remove_small_flaps`, `split_non_manifold_edges`, `drop_extra_faces_on_non_manifold_edges`, `make_orientation_consistent`, `orient_outward`, `repair_input_mesh` |
 | Boundary loops | `extract_boundary_loops`, loop orientation, outward direction |
-| Planar cap | plane fit and placement, seeding, `triangulate_planar_cap`, `create_side_band`, `make_cap` |
+| Planar cap | plane fit and placement, seeding, `triangulate_planar_cap`, `create_side_band`, `make_cap`; `keep_seeds_far_from_loop` (not used at the moment) |
 | Curved and fan caps | `make_curved_cap`, `make_fan_cap`, repair caps |
 | Hole-closing pipeline | `_attach_caps`, final repair passes, `create_caps`, `close_mesh_holes` |
 | Command line | `build_argparser`, `main` |
+
+Functions marked *not used at the moment* are kept for possible later use; their docstring explains why they are not called (see the `Notes` section).
 
 ---
 

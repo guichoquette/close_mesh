@@ -281,6 +281,43 @@ def _signed_area_uv(uv: np.ndarray) -> np.ndarray:
     return 0.5 * np.sum(x * np.roll(y, -1, axis=-1) - np.roll(x, -1, axis=-1) * y, axis=-1)
 
 
+def _get_bool_attr_or_method(obj: object, name: str, default: bool = True) -> bool:
+    """
+    Read a boolean attribute of an object, calling it if it is a method.
+
+    Older PyVista versions exposed some mesh checks (e.g. ``is_manifold``) as
+    methods and newer ones as properties; this reads both.
+
+    Parameters
+    ----------
+    obj : object
+        Object to query.
+    name : str
+        Name of the attribute or method.
+    default : bool, optional
+        Value returned if the attribute does not exist. Default is True.
+
+    Returns
+    -------
+    value : bool
+        The attribute (or the result of calling it without arguments; if the
+        call raises a TypeError, the attribute itself), cast to bool.
+
+    Notes
+    -----
+    Not used at the moment: `close_mesh_holes` reads ``is_manifold`` and
+    ``is_all_triangles`` directly, as properties of the PyVista version in
+    use. Kept for compatibility with older PyVista versions.
+    """
+    value = getattr(obj, name, default)
+    if callable(value):
+        try:
+            value = value()
+        except TypeError:
+            pass
+    return bool(value)
+
+
 def _signed_volume(mesh: pv.PolyData) -> float:
     """
     Signed volume of a triangle mesh (divergence theorem).
@@ -1150,6 +1187,59 @@ def keep_seeds_inside_loop(poly_uv: np.ndarray, grid_uv: np.ndarray, grid_points
     # closed=True would make matplotlib ignore the last vertex; contains_points closes the path anyway
     inside = MplPath(inner_poly_uv).contains_points(grid_uv)
     return grid_points[inside], inner_poly_uv
+
+
+def keep_seeds_far_from_loop(poly_uv: np.ndarray, seeds: np.ndarray, seeds_uv: np.ndarray, mean_seg: float,
+                             args: argparse.Namespace) -> np.ndarray:
+    """
+    Keep the seed points whose distance to the loop edges is at least ``mean_seg * args.seedDecimator``.
+
+    For each seed, the distance to every loop segment is computed in the
+    (u, v) frame and the minimum is kept.
+
+    Parameters
+    ----------
+    poly_uv : np.ndarray, shape (N, 2)
+        Loop polygon in (u, v).
+    seeds : np.ndarray, shape (M, 3)
+        Candidate seeds (3D), already inside the polygon.
+    seeds_uv : np.ndarray, shape (M, 2)
+        Same seeds in (u, v).
+    mean_seg : float
+        Mean loop edge length.
+    args : argparse.Namespace
+        CLI arguments; the minimal distance is ``mean_seg * args.seedDecimator``.
+
+    Returns
+    -------
+    seeds : np.ndarray, shape (K, 3)
+        Seeds far enough from the loop.
+
+    Notes
+    -----
+    Not used at the moment: `keep_seeds_inside_loop` keeps the seeds inside
+    an inward offset of the polygon, which gives the same margin from the
+    loop. Formerly named ``keepSeededPointsFarFromTheEdges``.
+
+    Warning: the projection parameter is computed as ``t = -dot / |V|^2``
+    while the projection of P on segment [A, A + V] is ``t = dot / |V|^2``
+    (with ``dot = (P - A) . V``). With the minus sign, `t` is mostly clamped
+    to 0 and the distance measured is often the distance to the segment
+    start rather than to the segment. Check this before using the function.
+    """
+    # Loop segments [a, a + v] in (u, v)
+    a = poly_uv
+    v = np.roll(poly_uv, -1, axis=0) - a
+    seg_len2 = np.sum(v ** 2, axis=1)
+
+    # Distance of every seed to every segment: (M, 1, 2) against (1, N, 2)
+    p = seeds_uv[:, None, :]
+    dot = np.sum((p - a[None, :, :]) * v[None, :, :], axis=2)
+    t = np.clip(-dot / (seg_len2[None, :] + 1e-12), 0.0, 1.0)  # see the warning above about the sign
+    projection = a[None, :, :] + t[..., None] * v[None, :, :]
+    min_dist = np.sqrt(np.min(np.sum((p - projection) ** 2, axis=2), axis=1))
+
+    return seeds[min_dist >= mean_seg * args.seedDecimator]
 
 
 def triangulate_planar_cap(projected_loop: np.ndarray, all_points: np.ndarray, plane_point: np.ndarray,
