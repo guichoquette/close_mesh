@@ -263,10 +263,10 @@ Watertight does not mean correct: every closed epoch (`brain_data/output/`) was 
 | spc-02 | 10 | — | — |
 | spc-04 | 10 | 01, 09 | — |
 | spc-06 | 10 | 07, 09b | — |
-| spc-07 | 12 | 02, 03, 06, 07, 07b, 09, 09b, 10b | — |
-| spc-10 | 12 | 01, 07, 10 | 07b, 10b ¹ |
+| spc-07 | 12 | 02, 03, 06, 07, 07b, 09, 09b, 10b | 09b |
+| spc-10 | 12 | 01, 07, 10 | 07b |
 | spc-12 | 12 | 06, 08b, 09b, 10, 10b | — |
-| spc-15 | 14 | 01, 02, 06, 08, 11 | 02 ² |
+| spc-15 | 14 | 01, 02, 06, 08, 11 | 02 |
 | spc-16 | 12 | — | — |
 | spc-17 | 7 | 02, 04, 08 | — |
 | spc-18 | 8 | — | — |
@@ -274,8 +274,7 @@ Watertight does not mean correct: every closed epoch (`brain_data/output/`) was 
 
 All the epochs of spc-01, spc-02, spc-16 and spc-18 are closed without any visible problem. In some cases, removing the floating blob gives an epoch without any problem.
 
-¹ The blob analysis below finds the far blob in spc-10 epo-10 (not 10b); to confirm.
-² Reported as "specimen 13, epoch 02"; there is no specimen 13, and spc-15 epo-02 has a blob 36 mm away from the brain; to confirm.
+The defects of spc-06 epo-07, spc-15 epo-11 and spc-17 epo-04 are tiny spots displayed in blue by CloudCompare on the planar cap: the normal is inverted there.
 
 ### The "b" epochs
 
@@ -293,8 +292,10 @@ Until their meaning is known, the "b" epochs should not be mixed with the main s
 | Cause | Epochs concerned | How it was found |
 |---|---|---|
 | **Curved cap on a large opening** | 25 of the 29 epochs with a defect: spc-04 epo-01, 09; spc-06 epo-09b; spc-07 epo-02, 03, 06, 07, 07b, 09, 10b; spc-10 epo-01, 07, 10; spc-12 epo-06, 08b, 09b, 10, 10b; spc-15 epo-01, 02, 06, 08; spc-17 epo-02, 08; spc-19 epo-05 | 22 of them have a curved cap of 700 to 6100 vertices, and spc-12 epo-10b one of 111 vertices; spc-15 epo-02 (47) and spc-17 epo-08 (4) only have small ones. Conversely, every epoch with a curved cap of more than 100 vertices has a defect, while the curved caps of the epochs without defect are tiny (4 to 6 vertices). |
-| **Floating blob** (isolated piece of scan, 23 to 66 mm away from the brain) | spc-07 epo-09b (55 mm), epo-10b (23 mm); spc-10 epo-06 (27 mm), epo-07b (42 mm), epo-10 (66 mm); spc-15 epo-02 (36 mm) | Connected parts of each closed mesh and their distance to the main part. Explains spc-07 epo-09b, which has no curved cap. |
-| **Not explained yet** | spc-06 epo-07, spc-15 epo-11, spc-17 epo-04 | Planar caps only, no far blob (spc-15 epo-11 has several small pieces 6 to 8 mm away). The defect still has to be described. |
+| **Floating blob** (isolated piece of scan far from the brain) | Seen: spc-07 epo-09b (55 mm), spc-10 epo-07b (42 mm), spc-15 epo-02 (36 mm). Also found by the analysis: spc-10 epo-06 (27 mm), epo-10 (66 mm), spc-07 epo-10b (23 mm) | Connected parts of each closed mesh and their distance to the main part. Explains spc-07 epo-09b, which has no curved cap. |
+| **Small open fragment closed inward** (blue spot) | spc-06 epo-07, spc-15 epo-11, part of spc-17 epo-04 | A small isolated piece of scan (57 to 130 faces) lying at the cut, with a hole. It is closed like the rest, but only the mesh as a whole is oriented outward, so this tiny closed piece can stay inward. |
+| **Tissue flap at the cut, under the planar cap** (blue spot) | spc-17 epo-04 (the remaining spot, 50 faces) | A small hole of the main surface, 0.1 mm under the planar cap: the two surfaces nearly overlap and the back of one of them is seen. |
+| **Inverted debris** | Up to 40 closed fragments per epoch (spc-15, spc-17) | Many small closed pieces of the scans are oriented inward. They are not visible from outside, but their volume is subtracted instead of added (about 0.04 % of the total). |
 
 **Why so many curved caps:** a curved cap is used when the opening, projected on its plane, crosses itself. On most large openings, the crossing is a **single micro-fold of three consecutive vertices** (two segments one vertex apart), with no measurable area: one tiny defect of the boundary is enough to replace the whole planar cut by a curved membrane, which follows the warped boundary and looks wrong. Only a few openings are really folded over tens or hundreds of vertices (spc-07 epo-02, spc-17 epo-02).
 
@@ -303,7 +304,10 @@ Until their meaning is known, the "b" epochs should not be mixed with the main s
 1. **Untangle the small folds of the projected loop** (prototype tested). When the projected loop crosses itself over at most 20 vertices, these vertices are aligned on the chord joining both sides of the fold, in the plane, and the planar cap is kept; the curved cap is used only for real folds. On the 25 epochs above, the prototype keeps all of them watertight and, of the 23 epochs with a curved cap of more than 100 vertices, **removes every such cap from 11** (spc-04 epo-01, 09; spc-06 epo-09b; spc-07 epo-09; spc-10 epo-01, 10; spc-12 epo-06, 09b; spc-15 epo-01, 08; spc-19 epo-05). The volume changes by −0.1 % to +2.5 % (the planar cap adds a small wedge, as everywhere else). The 12 others keep one or two large curved caps where the fold is larger.
 2. **Remove the floating blobs**: keep only the parts of the mesh close to the brain (e.g. within 10 mm of the largest part), before capping. Their volume is negligible, but they are part of the closed mesh.
 3. **For the real folds** (spc-07, spc-12, spc-15, spc-17): a better curved cap (e.g. minimal surface or fairing instead of harmonic interpolation), or splitting the opening into parts that can each be projected.
-4. **For the "b" epochs**: find their meaning in the BraDiPho documentation, or choose one version per epoch as suggested above.
+4. **Remove the small open fragments** (prototype tested): before capping, drop the isolated parts that are open and have at most 1000 faces (scan debris). On spc-06 epo-07 and spc-15 epo-11, the blue spots disappear (no inverted face left in the cap plane), the epochs stay watertight and the volume changes by less than 0.05 %.
+5. **Orient each closed part outward** (prototype tested): at the end, flip every connected part whose signed volume is clearly negative (not only the mesh as a whole). It fixes the inverted debris, and is safe for flat parts (whose volume is about zero, they are left as they are).
+6. **For the tissue flaps under the cap** (spc-17 epo-04): detect the surface of the scan lying within a fraction of a millimetre of the planar cap, inside the opening, and remove it before capping.
+7. **For the "b" epochs**: find their meaning in the BraDiPho documentation, or choose one version per epoch as suggested above.
 
 ---
 
