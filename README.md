@@ -223,7 +223,9 @@ Meshes with extremely short or irregular edges should be pre-filtered using `--m
 
 ### 🔹 5. Warped openings get a curved cap
 
-The planar cap needs the opening to project onto a plane as a simple (non self-intersecting) polygon. When the best-fit plane does not allow it, tilted planes are tried; if none works, the opening is closed with a curved (harmonic) cap instead and a `WARNING` is printed. Such a cap is not flat, which slightly changes how the closed volume is defined at that opening.
+The planar cap needs the opening to project onto its best-fit plane as a simple (non self-intersecting) polygon. When it does not, the opening is closed with a curved (harmonic) cap instead and a `WARNING` is printed. Such a cap is not flat, which slightly changes how the closed volume is defined at that opening.
+
+The planar cap is placed on the outer side of the opening, at its highest point; it therefore adds a small wedge of volume (typically under 1 %, up to ~3 % on very warped openings).
 
 ### 🔹 6. Scalar transfer uses nearest-neighbor
 

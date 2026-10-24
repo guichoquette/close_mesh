@@ -4,6 +4,7 @@ from collections import Counter
 
 import numpy as np
 import pyvista as pv
+from scipy.spatial import cKDTree
 
 from close_opening_scripts.close_planar_hole import (
     _find_projection_plane,
@@ -15,7 +16,9 @@ from close_opening_scripts.close_planar_hole import (
     make_orientation_consistent,
     orient_outward,
     remove_duplicate_faces,
+    remove_small_flaps,
     runDelaunay2dOnConcavePolygon,
+    split_non_manifold_edges,
 )
 
 
@@ -97,6 +100,43 @@ class InputRepairTests(unittest.TestCase):
         inward = self.sphere.flip_faces()
         self.assertLess(signed_volume(inward), 0)
         self.assertGreater(signed_volume(orient_outward(inward)), 0)
+
+    def test_removes_small_flap_glued_on_an_edge(self):
+        a, b = (int(v) for v in self.faces[0][:2])
+        points = np.vstack([self.sphere.points, [[0.0, 0.0, 2.0]]])
+        mesh = pv.PolyData(points, np.hstack([np.full((len(self.faces) + 1, 1), 3),
+                                              np.vstack([self.faces, [[b, a, len(points) - 1]]])]).ravel())
+        repaired = remove_small_flaps(mesh)
+
+        np.testing.assert_array_equal(repaired.faces.reshape(-1, 4)[:, 1:], self.faces)
+
+
+def outward_tetrahedron(points: np.ndarray, ids) -> np.ndarray:
+    """Faces of the tetrahedron `ids`, wound outward."""
+    faces = []
+    centre = points[list(ids)].mean(axis=0)
+    for k in range(4):
+        f = [ids[j] for j in range(4) if j != k]
+        n = np.cross(points[f[1]] - points[f[0]], points[f[2]] - points[f[0]])
+        faces.append(f if n @ (points[f[0]] - centre) > 0 else f[::-1])
+    return np.array(faces)
+
+
+class SplitNonManifoldEdgeTests(unittest.TestCase):
+    def test_separates_two_closed_sheets_sharing_an_edge(self):
+        # Two tetrahedra glued along edge 0-1 only: that edge is shared by four faces
+        points = np.array([[0, 0, 0], [1, 0, 0], [0.5, 1, 0.2], [0.5, 0.3, 1],
+                           [0.5, -1, 0.2], [0.5, -0.3, -1]], dtype=float)
+        faces = np.vstack([outward_tetrahedron(points, (0, 1, 2, 3)), outward_tetrahedron(points, (0, 1, 4, 5))])
+        mesh = pv.PolyData(points, np.hstack([np.full((len(faces), 1), 3), faces]).ravel())
+        split = split_non_manifold_edges(mesh)
+
+        edges = Counter(tuple(sorted((int(f[k]), int(f[(k + 1) % 3]))))
+                        for f in split.faces.reshape(-1, 4)[:, 1:] for k in range(3))
+        self.assertEqual(set(edges.values()), {2})
+        self.assertEqual(split.n_points, mesh.n_points + 2)
+        self.assertEqual(directed_edge_conflicts(split), 0)
+        self.assertAlmostEqual(signed_volume(split), signed_volume(mesh))
 
 
 class PlanarTriangulationTests(unittest.TestCase):
@@ -201,6 +241,29 @@ class ProjectionPlaneTests(unittest.TestCase):
         t = np.linspace(0, 2 * np.pi, 120, endpoint=False)
         loop = np.c_[np.sin(t) + 2 * np.sin(2 * t), np.cos(t) - 2 * np.cos(2 * t), -np.sin(3 * t)]
         self.assertIsNone(_find_projection_plane(loop))
+
+
+class PlaneSideTests(unittest.TestCase):
+    """The planar cap lies on the outer side of the opening, whatever the sign of the SVD normal."""
+
+    args = argparse.Namespace(debug=None, debug_loop="", seedStepFactor=4.0, seedDecimator=4.0)
+
+    def test_cap_plane_is_outside_the_mesh(self):
+        sphere = pv.Sphere(radius=1.0, theta_resolution=60, phi_resolution=60).triangulate().clean()
+        centres = sphere.cell_centers().points
+        # Wavy opening on top: the loop is not planar, so the side of the plane matters
+        keep = centres[:, 2] < 0.5 + 0.15 * np.sin(3 * np.arctan2(centres[:, 1], centres[:, 0]))
+        dome = sphere.extract_cells(np.where(keep)[0]).extract_surface(algorithm=None).triangulate().clean()
+        for upside_down in (False, True):
+            with self.subTest(upside_down=upside_down):
+                mesh = dome.rotate_x(180) if upside_down else dome
+                outward = np.array([0.0, 0.0, -1.0 if upside_down else 1.0])
+                (loop,) = extract_boundary_loops(mesh)
+                cap = make_cap(mesh, loop, self.args)
+
+                loop_height = (mesh.points[loop] @ outward).max()
+                is_loop = cKDTree(mesh.points[loop]).query(cap.points)[0] < 1e-9
+                self.assertGreaterEqual((cap.points[~is_loop] @ outward).min(), loop_height - 1e-6)
 
 
 class CurvedCapTests(MakeCapTests):
