@@ -34,7 +34,8 @@ close_mesh/
 │   ├── copy_color.py                        # Scalar-field transfer tool
 │   └── find_and_split_volume.py             # Debug tool to inspect individual disconnected surfaces
 │
-├── batch-extraction.sh                      # Closes every epoch of a specimen
+├── batch_close_all.py                       # Closes every epoch of every specimen + results.csv
+├── batch-extraction.sh                      # Older per-epoch script for spc-02, kept for debugging
 ├── requirements.txt
 └── README.md
 ```
@@ -173,6 +174,51 @@ python close_opening_scripts/close_planar_hole.py \
  --meshFilter 1e-5
 
 The script prints `watertight=True  volume=...` or `watertight=False  volume=N/A`.
+
+---
+
+# 🗂️ Batch Processing of All Specimens (`batch_close_all.py`)
+
+Closes every epoch of every specimen downloaded in `brain_data/`, and summarises the results in a CSV file.
+
+### Input
+
+The specimen folders as unzipped from BraDiPho:
+
+```text
+brain_data/<specimen>_hem-<L|R>_epo-all_dissection/bradipho_data/<specimen>/dissection/*_dissection.ply
+```
+
+### Run
+
+```bash
+python batch_close_all.py
+```
+
+Options:
+
+- `--data` — folder containing the specimen folders (default: `brain_data`)
+- `--out` — output folder (default: `brain_data/output`)
+- `--workers` — number of epochs processed in parallel (default: 4; each worker needs about 2 GB of RAM)
+- `--meshFilter` — short edge collapse tolerance (default: `1e-5`)
+- `--overwrite` — process again the epochs already done
+
+### Output
+
+```text
+brain_data/output/
+├── results.csv                              # One line per epoch
+├── spc-01/
+│   ├── spc-01_hem-R_epo-01_closed.ply       # Closed mesh of each epoch
+│   └── ...
+└── ...
+```
+
+`results.csv` columns: `specimen`, `hemisphere`, `epoch`, `watertight`, `volume` (empty when not watertight), `curved_caps` (number of openings closed with a curved cap), `seconds`, `input`, `output`, `error`.
+
+Each epoch goes through exactly the same code as the command line script. The CSV is written after every epoch, and epochs already in it are skipped, so an interrupted run can simply be started again. All 130 epochs take about 30 to 45 minutes with 4 workers. `brain_data/output/` is ignored by git.
+
+`batch-extraction.sh` is the older per-epoch script for spc-02, kept for debugging. Its input paths (`brain_data/spc-02/dissection/`) follow an older folder layout and must be adapted before use.
 
 ---
 
