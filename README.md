@@ -251,6 +251,62 @@ An epoch is counted as **watertight** when the script reports `watertight=True` 
 
 ---
 
+# 🔍 Visual Check of the BraDiPho Results
+
+Watertight does not mean correct: every closed epoch (`brain_data/output/`) was also inspected visually, in CloudCompare (results of 2026-10-24).
+
+### Observations
+
+| Specimen | Epochs | Epochs with a visible defect after closing | Floating blob far from the brain |
+|---|---|---|---|
+| spc-01 | 11 | — | — |
+| spc-02 | 10 | — | — |
+| spc-04 | 10 | 01, 09 | — |
+| spc-06 | 10 | 07, 09b | — |
+| spc-07 | 12 | 02, 03, 06, 07, 07b, 09, 09b, 10b | — |
+| spc-10 | 12 | 01, 07, 10 | 07b, 10b ¹ |
+| spc-12 | 12 | 06, 08b, 09b, 10, 10b | — |
+| spc-15 | 14 | 01, 02, 06, 08, 11 | 02 ² |
+| spc-16 | 12 | — | — |
+| spc-17 | 7 | 02, 04, 08 | — |
+| spc-18 | 8 | — | — |
+| spc-19 | 12 | 05 | — |
+
+All the epochs of spc-01, spc-02, spc-16 and spc-18 are closed without any visible problem. In some cases, removing the floating blob gives an epoch without any problem.
+
+¹ The blob analysis below finds the far blob in spc-10 epo-10 (not 10b); to confirm.
+² Reported as "specimen 13, epoch 02"; there is no specimen 13, and spc-15 epo-02 has a blob 36 mm away from the brain; to confirm.
+
+### The "b" epochs
+
+The meaning of the "b" epochs (e.g. `epo-07` and `epo-07b`) is not documented in the downloaded data. Visually, an epoch and its "b" variant are very similar, with small variations: they could be two versions of the same mesh. In some cases one could replace the other:
+
+| Specimen | Candidate replacement |
+|---|---|
+| spc-10 | epo-07b could replace epo-07, and epo-10b could replace epo-10 |
+| spc-12 | epo-09 could replace epo-09b |
+
+Until their meaning is known, the "b" epochs should not be mixed with the main sequence when comparing volumes across epochs (some of them break the decrease of volume expected along a dissection).
+
+### Causes found
+
+| Cause | Epochs concerned | How it was found |
+|---|---|---|
+| **Curved cap on a large opening** | 25 of the 29 epochs with a defect: spc-04 epo-01, 09; spc-06 epo-09b; spc-07 epo-02, 03, 06, 07, 07b, 09, 10b; spc-10 epo-01, 07, 10; spc-12 epo-06, 08b, 09b, 10, 10b; spc-15 epo-01, 02, 06, 08; spc-17 epo-02, 08; spc-19 epo-05 | 22 of them have a curved cap of 700 to 6100 vertices, and spc-12 epo-10b one of 111 vertices; spc-15 epo-02 (47) and spc-17 epo-08 (4) only have small ones. Conversely, every epoch with a curved cap of more than 100 vertices has a defect, while the curved caps of the epochs without defect are tiny (4 to 6 vertices). |
+| **Floating blob** (isolated piece of scan, 23 to 66 mm away from the brain) | spc-07 epo-09b (55 mm), epo-10b (23 mm); spc-10 epo-06 (27 mm), epo-07b (42 mm), epo-10 (66 mm); spc-15 epo-02 (36 mm) | Connected parts of each closed mesh and their distance to the main part. Explains spc-07 epo-09b, which has no curved cap. |
+| **Not explained yet** | spc-06 epo-07, spc-15 epo-11, spc-17 epo-04 | Planar caps only, no far blob (spc-15 epo-11 has several small pieces 6 to 8 mm away). The defect still has to be described. |
+
+**Why so many curved caps:** a curved cap is used when the opening, projected on its plane, crosses itself. On most large openings, the crossing is a **single micro-fold of three consecutive vertices** (two segments one vertex apart), with no measurable area: one tiny defect of the boundary is enough to replace the whole planar cut by a curved membrane, which follows the warped boundary and looks wrong. Only a few openings are really folded over tens or hundreds of vertices (spc-07 epo-02, spc-17 epo-02).
+
+### How they could be closed
+
+1. **Untangle the small folds of the projected loop** (prototype tested). When the projected loop crosses itself over at most 20 vertices, these vertices are aligned on the chord joining both sides of the fold, in the plane, and the planar cap is kept; the curved cap is used only for real folds. On the 25 epochs above, the prototype keeps all of them watertight and, of the 23 epochs with a curved cap of more than 100 vertices, **removes every such cap from 11** (spc-04 epo-01, 09; spc-06 epo-09b; spc-07 epo-09; spc-10 epo-01, 10; spc-12 epo-06, 09b; spc-15 epo-01, 08; spc-19 epo-05). The volume changes by −0.1 % to +2.5 % (the planar cap adds a small wedge, as everywhere else). The 12 others keep one or two large curved caps where the fold is larger.
+2. **Remove the floating blobs**: keep only the parts of the mesh close to the brain (e.g. within 10 mm of the largest part), before capping. Their volume is negligible, but they are part of the closed mesh.
+3. **For the real folds** (spc-07, spc-12, spc-15, spc-17): a better curved cap (e.g. minimal surface or fairing instead of harmonic interpolation), or splitting the opening into parts that can each be projected.
+4. **For the "b" epochs**: find their meaning in the BraDiPho documentation, or choose one version per epoch as suggested above.
+
+---
+
 # 🧰 Utilities (`utils/`)
 
 ### Scalar transfer (`copy_colors.py`)
