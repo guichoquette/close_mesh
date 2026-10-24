@@ -4,8 +4,8 @@ Automaticaly close an open mesh with a plane and headband. Also does a scalar-fi
 
 This project provides a full workflow to:
 
-1. **Automatically detect and close planar (or nearly planar) openings in a 3D mesh**,
-2. **Generate triangulated caps** using projection, seeding, and constrained Delaunay triangulation,
+1. **Automatically detect and close the openings of a 3D surface mesh**, with a planar cap when the opening allows it and a curved cap otherwise,
+2. **Repair the defects of scanned meshes** that prevent a clean closing (duplicated triangles, flaps, non-manifold edges, inconsistent orientation),
 3. **Copy all per-vertex scalar data** (e.g., thickness, curvature, sulcal depth) from the original open mesh to the closed mesh.
 4. **Calculate the volume of closed meshes**, it make sure the new mesh is watertight. You can compute the volume with compute_volume.py or the pyvista option
 
@@ -26,11 +26,15 @@ close_mesh/
 ├── close_opening_scripts/
 │   └── close_planar_hole.py                 # Main hole-closing algorithm
 │
+├── tests/
+│   └── test_cap_orientation.py              # Unit tests of the closing pipeline
+│
 ├── utils/
 │   ├── compute_volume.py                    # Script to compute the volume of a closed mesh
 │   ├── copy_color.py                        # Scalar-field transfer tool
 │   └── find_and_split_volume.py             # Debug tool to inspect individual disconnected surfaces
 │
+├── batch-extraction.sh                      # Closes every epoch of a specimen
 ├── requirements.txt
 └── README.md
 ```
@@ -44,10 +48,12 @@ You can download the meshes used during development from the official BraDiPho d
 🔗 **BraDiPho – Brain Digital Fossils Archive**
 https://bradipho.eu/6-download.html
 
-All specimens and epochs are publicly available and easy to download.
+All specimens and epochs are publicly available and easy to download. Only the `.ply` files are needed (the `.bin` files are CloudCompare projects).
 
 The folder `brain_data` also contains the **first epoch** of a specimen along with its **texture file**.
 These two files are confirmed to work well with the full pipeline and are ideal for a **quick test run** of the scripts.
+
+Downloaded specimens (`brain_data/*_epo-all_dissection/`) are ignored by git.
 
 # 📦 Installation
 
@@ -62,13 +68,13 @@ pip install -r requirements.txt
 
 Main libraries:
 
-- pyvista
+- pyvista / vtk
 - numpy
-- scipy
-- shapely
+- scipy (sparse solver, Qhull Delaunay, connected components)
+- shapely (polygon validity and inward offset)
+- triangle (constrained Delaunay triangulation of the planar cap)
 - trimesh
 - matplotlib
-- vtk
 
 ---
 
@@ -107,26 +113,90 @@ NOTE: You will be able to see the closed mesh followed by the closed mesh with h
 
 # 🔧 Cap Closing Algorithm (`close_planar_hole.py`)
 
-This script **automatically closes open boundary loops** in a triangulated mesh.
+This script **automatically closes every open boundary loop** of a triangulated mesh and checks that the result is watertight.
 
 ### How it works
 
-1. Detect boundary loops
-2. Fit a plane via **SVD** on loop vertices
-3. Project loop points onto the plane
-4. Generate a 2D sampling grid
-5. Filter seeds inside polygon offsets
-6. Perform constrained **Delaunay triangulation**
-7. Keep only triangles inside the loop
-8. Generate a side band
-9. Merge caps into the mesh
-10. Recompute normals
+**1. Load and clean the mesh**
+
+- Read and triangulate the mesh, merge duplicated points.
+- Optionally collapse edges shorter than `--meshFilter` (recommended: `1e-5` for BraDiPho meshes).
+
+**2. Repair the input mesh**
+
+Scanned dissection meshes contain defects that make the boundary ambiguous. They are repaired before any cap is built:
+
+- `remove_duplicate_faces` — removes triangles present twice (often two copies wound in opposite directions, a zero-thickness flap).
+- `remove_small_flaps` — removes small patches (≤ 20 faces) that are only glued on the surface by a non-manifold edge.
+- `split_non_manifold_edges` — where two sheets of surface meet along an edge shared by more than two faces, the faces are paired by angle around the edge and the vertices are duplicated so that each sheet becomes manifold. No geometry is moved or removed. Vertices on a boundary are not split, so that two openings touching at a vertex keep two separate caps.
+- `make_orientation_consistent` — propagates a consistent winding across manifold edges only (VTK's own propagation also crosses non-manifold edges and can flip whole regions), keeping the majority winding of each patch.
+- `orient_outward` — flips the whole mesh if its signed volume is negative.
+
+**3. Extract the boundary loops**
+
+`extract_boundary_loops` walks the boundary edge by edge. Where two openings share a vertex, the loop is cut into simple loops; a boundary chain left open by a non-manifold edge is closed between its two ends.
+
+**4. Build one cap per loop**
+
+- The loop is ordered **against the mesh winding** (`_orient_loop_against_mesh`), so that the cap is oriented consistently with the mesh by construction.
+- A plane is fitted to the loop by **SVD**. If the loop projects onto it as a **simple polygon**, a **planar cap** is built:
+  1. The plane is moved to the highest point of the loop, **on the outer side of the mesh** (given by the normals of the faces along the boundary). The sign of the SVD normal is arbitrary: without this, the plane could land inside the brain and the cap would cut through the mesh.
+  2. The loop is projected onto the plane and a regular grid of seed points is kept inside an inward offset of the polygon.
+  3. The polygon is triangulated with **Triangle** (constrained Delaunay): every loop edge is kept, triangles outside the polygon are removed, and no point is added on the loop.
+  4. A **side band** connects the original 3D loop to its projection.
+- Otherwise (the opening is too warped and its projection crosses itself), a **curved cap** is built (`make_curved_cap`) and a `WARNING` is printed:
+  1. The loop is mapped onto a unit disk by arc length, seeds are placed inside the polygon, and the disk is triangulated (Qhull).
+  2. Loop vertices keep their exact position; interior vertices are placed by **harmonic interpolation** (Laplace equation), which gives a smooth membrane spanning the loop.
+
+**5. Assemble and check**
+
+- Caps are attached to the mesh **by vertex index** (`_attach_caps`), never by merging coincident points, which would join again the vertices duplicated in step 2.
+- Normals are computed without letting VTK reorder faces.
+- The result is **watertight** when it has no boundary edge and no non-manifold edge; only then is the volume computed and printed.
 
 ### Run
 
 python close_opening_scripts/close_planar_hole.py \
  -i brain_data/sub-02_epo-01_ref-01_mesh.ply \
- -o brain_data/closed_solid/output.ply
+ -o brain_data/closed_solid/output.ply \
+ --meshFilter 1e-5
+
+The script prints `watertight=True  volume=...` or `watertight=False  volume=N/A`.
+
+---
+
+# 📊 Results on the BraDiPho dissection meshes
+
+All 130 epochs of the 12 dissected specimens available on BraDiPho were closed with `--meshFilter 1e-5` (results of 2026-10-24).
+
+An epoch is counted as **watertight** when the script reports `watertight=True` and therefore gives a volume (no boundary edge and no non-manifold edge).
+
+| Specimen | Epochs | Watertight (volume given) | Epochs with a curved cap | Not watertight: epoch (open edges / non-manifold edges) |
+|---|---|---|---|---|
+| spc-01 | 11 | 10 | 1 | epo-04 (0/1) |
+| spc-02 | 10 | 8 | 0 | epo-02 (0/1), epo-04 (0/1) |
+| spc-04 | 10 | 8 | 3 | epo-01 (2/2), epo-03 (0/2) |
+| spc-06 | 10 | 8 | 1 | epo-03 (0/1), epo-04 (0/1) |
+| spc-07 | 12 | 4 | 8 | epo-01 (0/1), epo-03 (0/2), epo-05 (0/1), epo-06 (0/1), epo-07 (0/2), epo-09 (0/2), epo-09b (0/1), epo-10b (0/1) |
+| spc-10 | 12 | 6 | 3 | epo-03 (0/1), epo-07 (0/3), epo-07b (0/1), epo-09 (2/2), epo-10 (0/2), epo-10b (0/1) |
+| spc-12 | 12 | 5 | 5 | epo-02 (0/2), epo-05 (0/1), epo-06 (0/2), epo-07 (0/1), epo-07b (0/1), epo-09b (0/1), epo-10b (0/1) |
+| spc-15 | 14 | 6 | 4 | epo-01 (0/1), epo-02 (0/3), epo-04 (0/1), epo-06 (0/1), epo-08 (0/1), epo-09 (0/1), epo-10 (0/1), epo-12 (0/1) |
+| spc-16 | 12 | 4 | 0 | epo-02 (0/3), epo-03 (0/3), epo-05 (0/1), epo-07 (0/1), epo-08 (0/3), epo-09 (0/2), epo-10 (0/1), epo-11 (0/2) |
+| spc-17 | 7 | 2 | 2 | epo-01 (0/1), epo-02 (3/3), epo-03 (0/2), epo-07 (0/1), epo-08 (0/1) |
+| spc-18 | 8 | 3 | 0 | epo-02 (0/1), epo-04 (0/1), epo-05 (0/1), epo-06 (0/1), epo-08 (0/1) |
+| spc-19 | 12 | 5 | 1 | epo-02 (0/1), epo-03 (2/5), epo-04 (0/1), epo-06 (0/1), epo-08 (0/1), epo-10 (0/1), epo-12 (0/1) |
+| **Total** | **130** | **69** | **28** | **61** |
+
+- Of the 61 epochs that are not watertight, 57 have **no open edge at all**: only 1 to 3 non-manifold edges remain, inherited from the input mesh (edges with both ends on a boundary, which are not split on purpose).
+- Volume check: each closed volume was compared with a reference where every hole is closed by a flat fan to the loop centroid. The mean difference is **0.4 %**, and no epoch differs by more than **3.4 %** (the planar cap, on the outer side, adds a small wedge).
+
+### Tests
+
+```bash
+python -m unittest tests.test_cap_orientation -v
+```
+
+The tests cover the side band winding, the input repairs, boundary loop extraction (pinched boundaries), loop orientation, planar and curved caps for every combination of mesh winding and loop order, the side of the cap plane, and regressions found on BraDiPho meshes.
 
 ---
 
@@ -151,6 +221,7 @@ brain_data/closed_solid/output_scalar_fields.ply
 python close_opening_scripts/close_planar_hole.py \
  -i brain_data/sub-02_epo-01_ref-01_mesh.ply \
  -o brain_data/closed_solid/output.ply \
+ --meshFilter 1e-5 \
  --debug brain_data/debug/
 
 ### 2. Transfer scalar fields
@@ -163,15 +234,14 @@ python utils/copy_color.py
 
 # 🧪 Debug Outputs
 
-When using `--debug`, the script exports:
+When using `--debug`, the script exports, for each loop (`loop1/`, `loop2/`, ...):
 
-- boundary loops
-- projected loops
-- grid seeds
-- filtered seeds
-- triangulation
-- side band
-- remaining open edges
+- the boundary loop
+- the projected loop and the inward-offset polygon
+- grid seeds and filtered seeds
+- the planar triangulation, or the curved cap (`debug_curved_cap.ply`)
+
+and, for the whole mesh, the filtered mesh (`--meshFilter`) and the remaining open edges.
 
 These outputs help inspect and validate each internal step.
 
@@ -205,27 +275,27 @@ python utils/copy_color.py \
 
 # ⚠️ Limitations / Known Issues
 
-### 🔹 1. Smaller opening meshes increase debug output size
+### 🔹 1. Remaining non-manifold edges
 
-My algorithm works really well with larger holes. But when it finds smaller one it has trouble closing them.
+About half of the BraDiPho dissection epochs still end with 1 to 3 non-manifold edges inherited from the input mesh, where both ends of the edge lie on a boundary. The script then reports `watertight=False` and gives no volume, even though the mesh is otherwise closed (see the results table).
 
-### 🔹 2. Issue with the BraDiPho Meshes with epochs disection
+### 🔹 2. Open boundary chains
 
-As soon as disections comme in consideration, the meshes found on the BraDiPho website have structural holes, floting islands & the meshes are fractured in smallers surfaces. It is impacting my code making the reconstruction invalid for the moment.
+When a non-manifold edge cuts a boundary into an open chain, the chain is closed between its two ends by an edge that does not exist in the mesh. This leaves 1 to 3 open edges on a few epochs.
 
-### 🔹 3. Works best for planar or near-planar holes
+### 🔹 3. Warped openings get a curved cap
 
-Highly curved openings may distort projection or triangulation.
+The planar cap needs the opening to project onto its best-fit plane as a simple (non self-intersecting) polygon. When it does not, the opening is closed with a curved (harmonic) cap instead and a `WARNING` is printed. Such a cap is not flat, which slightly changes how the closed volume is defined at that opening.
+
+The planar cap is placed on the outer side of the opening, at its highest point; it therefore adds a small wedge of volume (typically under 1 %, up to ~3 % on very warped openings).
 
 ### 🔹 4. Sensitive to boundary noise
 
 Meshes with extremely short or irregular edges should be pre-filtered using `--meshFilter`.
 
-### 🔹 5. Warped openings get a curved cap
+### 🔹 5. Duplicated vertices in the output
 
-The planar cap needs the opening to project onto its best-fit plane as a simple (non self-intersecting) polygon. When it does not, the opening is closed with a curved (harmonic) cap instead and a `WARNING` is printed. Such a cap is not flat, which slightly changes how the closed volume is defined at that opening.
-
-The planar cap is placed on the outer side of the opening, at its highest point; it therefore adds a small wedge of volume (typically under 1 %, up to ~3 % on very warped openings).
+Non-manifold edges are repaired by duplicating vertices at the same position. The output must not be cleaned with point merging (e.g. `clean()` with default options), or the repaired sheets would be joined again.
 
 ### 🔹 6. Scalar transfer uses nearest-neighbor
 
@@ -242,19 +312,19 @@ The triangulation and debug exports scale with mesh size.
 
 ### 🔧 Algorithmic Improvements
 
+- **Split the last non-manifold edges after capping**
+  Once the caps are attached, no vertex lies on a boundary any more, so the non-manifold edges left on purpose could be split safely. This is the main step to make the remaining epochs watertight.
+
+- **Close open boundary chains through the mesh**
+  Close a chain cut by a non-manifold edge along that edge instead of with a new edge.
+
 - **Adaptive seeding strategies**
-  Increase sampling density near the boundary, reduce it inside. (reduce the over estimation of the volume)
+  Increase sampling density near the boundary, reduce it inside.
 
 - **Weighted scalar transfer**
   Replace nearest-neighbor with inverse-distance or barycentric interpolation.
 
-- **Small hole handlers**
-  I still need to find a way to adapt the script to handle diferently smaller holes.
-
 ### 🎨 Mesh Quality Enhancements
-
-- **Pre-closing mesh clean up**
-  To make the reconstruction valid on epochs with disection, we need a way to fuse the seperated surfaces of the mesh in a clean way. being able to get rid of the structural holes & floating island would also be a must.
 
 - **Post-cap smoothing** (Taubin, Laplacian, or HC smoothing)
   Improves blending between cap and original surface.
