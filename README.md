@@ -130,23 +130,24 @@ Scanned dissection meshes contain defects that make the boundary ambiguous. They
 
 - `remove_duplicate_faces` — removes triangles present twice (often two copies wound in opposite directions, a zero-thickness flap).
 - `remove_small_flaps` — removes small patches (≤ 20 faces) that are only glued on the surface by a non-manifold edge.
+- `remove_small_open_fragments` — removes the small isolated parts that are open (≤ 1000 faces): pieces of scan debris that would otherwise be closed as tiny flat parts, possibly wound inward (seen as blue spots on the cap).
 - `split_non_manifold_edges` — where two sheets of surface meet along an edge shared by more than two faces, the faces are paired by angle around the edge and the vertices are duplicated so that each sheet becomes manifold. No geometry is moved or removed. Vertices on a boundary are not split, so that two openings touching at a vertex keep two separate caps.
 - `make_orientation_consistent` — propagates a consistent winding across manifold edges only (VTK's own propagation also crosses non-manifold edges and can flip whole regions), keeping the majority winding of each patch.
 - `orient_outward` — flips the whole mesh if its signed volume is negative.
 
 **3. Extract the boundary loops**
 
-`extract_boundary_loops` walks the boundary edge by edge. Where two openings share a vertex, the loop is cut into simple loops; a boundary chain left open by a non-manifold edge is closed between its two ends.
+`extract_boundary_loops` walks the boundary edge by edge. Where two openings share a vertex, the loop is cut into simple loops. A non-manifold edge can cut the boundary of an opening into open chains: they are joined end to end through the non-manifold edges linking their ends (`_join_open_chains`), which rebuilds the opening; only a chain that cannot be joined is closed between its two ends (closing every chain on itself added an edge of up to 10 cm across the opening).
 
 **4. Build one cap per loop**
 
 - The loop is ordered **against the mesh winding** (`_orient_loop_against_mesh`), so that the cap is oriented consistently with the mesh by construction.
-- A plane is fitted to the loop by **SVD**. If the loop projects onto it as a **simple polygon**, a **planar cap** is built:
+- A plane is fitted to the loop by **SVD**. If the loop projects onto it as a **simple polygon**, a **planar cap** is built. A projected loop that crosses itself only at a small fold (≤ 20 vertices, often a micro-fold of three vertices) is first straightened (`untangle_projected_loop`): the vertices of the fold are aligned on its chord, in the plane.
   1. The plane is moved to the highest point of the loop, **on the outer side of the mesh** (given by the normals of the faces along the boundary). The sign of the SVD normal is arbitrary: without this, the plane could land inside the brain and the cap would cut through the mesh.
   2. The loop is projected onto the plane and a regular grid of seed points is kept inside an inward offset of the polygon.
   3. The polygon is triangulated with **Triangle** (constrained Delaunay): every loop edge is kept, triangles outside the polygon are removed, and no point is added on the loop.
   4. A **side band** connects the original 3D loop to its projection.
-- Otherwise (the opening is too warped and its projection crosses itself), a **curved cap** is built (`make_curved_cap`) and a `WARNING` is printed:
+- Otherwise (the opening is really folded and its projection crosses itself), a **curved cap** is built (`make_curved_cap`) and a `WARNING` is printed:
   1. The loop is mapped onto a unit disk by arc length, seeds are placed inside the polygon, and the disk is triangulated (Qhull).
   2. Loop vertices keep their exact position; interior vertices are placed by **harmonic interpolation** (Laplace equation), which gives a smooth membrane spanning the loop.
 
@@ -162,7 +163,12 @@ On the capped mesh, up to three passes fix what step 2 had to leave:
 - `drop_extra_faces_on_non_manifold_edges`: some non-manifold edges cannot be split (the faces around them reconnect around both vertices: a small fold or pocket of the scan). Only the two faces that best continue the surface are kept.
 - The tiny holes this opens are capped (`_make_repair_cap`): the regular cap, or a fan around the hole centroid (`make_fan_cap`) when the regular cap would link two loop vertices already linked in the mesh.
 
-**7. Check**
+**7. Clean the closed parts**
+
+- `remove_inner_and_far_parts`: the parts floating **inside the brain** (scan debris, whose volume was subtracted or counted twice) and the parts **far from it** (blobs, more than 5 % of the brain size away, about 10 mm) are removed. Small fragments close to the outer surface are kept.
+- `orient_parts_outward`: every remaining part is oriented outward (not only the mesh as a whole); flat parts, which have no inside, are left as they are.
+
+**8. Check**
 
 - Normals are computed without letting VTK reorder faces.
 - The result is **watertight** when it has no boundary edge and no non-manifold edge; only then is the volume computed and printed.
@@ -231,23 +237,23 @@ An epoch is counted as **watertight** when the script reports `watertight=True` 
 
 | Specimen | Epochs | Watertight (volume given) | Epochs with a curved cap | Mean volume difference | Max volume difference |
 |---|---|---|---|---|---|
-| spc-01 | 11 | 11 | 1 | 1.6 % | 3.4 % |
+| spc-01 | 11 | 11 | 0 | 1.6 % | 3.4 % |
 | spc-02 | 10 | 10 | 0 | 0.9 % | 3.2 % |
-| spc-04 | 10 | 10 | 3 | 0.1 % | 0.2 % |
-| spc-06 | 10 | 10 | 3 | 0.2 % | 1.2 % |
-| spc-07 | 12 | 12 | 8 | 0.2 % | 0.6 % |
-| spc-10 | 12 | 12 | 4 | 0.3 % | 0.6 % |
-| spc-12 | 12 | 12 | 7 | 0.3 % | 0.7 % |
-| spc-15 | 14 | 14 | 4 | 0.6 % | 2.2 % |
-| spc-16 | 12 | 12 | 2 | 0.1 % | 0.3 % |
-| spc-17 | 7 | 7 | 3 | 0.2 % | 0.3 % |
+| spc-04 | 10 | 10 | 1 | 0.1 % | 0.2 % |
+| spc-06 | 10 | 10 | 0 | 0.3 % | 1.2 % |
+| spc-07 | 12 | 12 | 7 | 0.5 % | 2.5 % |
+| spc-10 | 12 | 12 | 1 | 0.2 % | 0.6 % |
+| spc-12 | 12 | 12 | 2 | 0.4 % | 0.7 % |
+| spc-15 | 14 | 14 | 1 | 0.7 % | 2.3 % |
+| spc-16 | 12 | 12 | 0 | 0.1 % | 0.3 % |
+| spc-17 | 7 | 7 | 0 | 0.2 % | 0.3 % |
 | spc-18 | 8 | 8 | 0 | 0.1 % | 0.4 % |
-| spc-19 | 12 | 12 | 3 | 0.1 % | 0.3 % |
-| **Total** | **130** | **130** | **38** | **0.4 %** | **3.4 %** |
+| spc-19 | 12 | 12 | 0 | 0.2 % | 1.8 % |
+| **Total** | **130** | **130** | **12** | **0.45 %** | **3.4 %** |
 
-- Every epoch is watertight and gets a volume. One epoch (spc-17 epo-05) keeps 5 edges with an inconsistent orientation, which may slightly affect its volume.
-- "Epochs with a curved cap" counts the epochs where at least one opening, often a tiny one, had no valid projection plane.
-- The planar cap, placed on the outer side of the opening, adds a small wedge of volume: this is why the largest differences are positive.
+- Every epoch is watertight and gets a volume.
+- "Epochs with a curved cap" counts the epochs where at least one opening is really folded and has no valid projection plane, even after straightening its small folds (38 epochs before the straightening).
+- The reference closes every hole of the repaired mesh by a flat fan to its loop centroid, inner and far parts removed. The planar cap, placed on the outer side of the opening, adds a small wedge of volume: this is why the largest differences are positive.
 
 ---
 
@@ -299,15 +305,42 @@ Until their meaning is known, the "b" epochs should not be mixed with the main s
 
 **Why so many curved caps:** a curved cap is used when the opening, projected on its plane, crosses itself. On most large openings, the crossing is a **single micro-fold of three consecutive vertices** (two segments one vertex apart), with no measurable area: one tiny defect of the boundary is enough to replace the whole planar cut by a curved membrane, which follows the warped boundary and looks wrong. Only a few openings are really folded over tens or hundreds of vertices (spc-07 epo-02, spc-17 epo-02).
 
-### How they could be closed
+### Second visual check (after the corrections)
 
-1. **Untangle the small folds of the projected loop** (prototype tested). When the projected loop crosses itself over at most 20 vertices, these vertices are aligned on the chord joining both sides of the fold, in the plane, and the planar cap is kept; the curved cap is used only for real folds. On the 25 epochs above, the prototype keeps all of them watertight and, of the 23 epochs with a curved cap of more than 100 vertices, **removes every such cap from 11** (spc-04 epo-01, 09; spc-06 epo-09b; spc-07 epo-09; spc-10 epo-01, 10; spc-12 epo-06, 09b; spc-15 epo-01, 08; spc-19 epo-05). The volume changes by −0.1 % to +2.5 % (the planar cap adds a small wedge, as everywhere else). The 12 others keep one or two large curved caps where the fold is larger.
-2. **Remove the floating blobs**: keep only the parts of the mesh close to the brain (e.g. within 10 mm of the largest part), before capping. Their volume is negligible, but they are part of the closed mesh.
-3. **For the real folds** (spc-07, spc-12, spc-15, spc-17): a better curved cap (e.g. minimal surface or fairing instead of harmonic interpolation), or splitting the opening into parts that can each be projected.
-4. **Remove the small open fragments** (prototype tested): before capping, drop the isolated parts that are open and have at most 1000 faces (scan debris). On spc-06 epo-07 and spc-15 epo-11, the blue spots disappear (no inverted face left in the cap plane), the epochs stay watertight and the volume changes by less than 0.05 %.
-5. **Orient each closed part outward** (prototype tested): at the end, flip every connected part whose signed volume is clearly negative (not only the mesh as a whole). It fixes the inverted debris, and is safe for flat parts (whose volume is about zero, they are left as they are).
-6. **For the tissue flaps under the cap** (spc-17 epo-04): detect the surface of the scan lying within a fraction of a millimetre of the planar cap, inside the opening, and remove it before capping.
-7. **For the "b" epochs**: find their meaning in the BraDiPho documentation, or choose one version per epoch as suggested above.
+The corrections below (straightening small folds, joining open boundary chains, removing small open fragments, inner and far parts, orienting each part outward) were then added to the pipeline, and the epochs with a defect were inspected again:
+
+| Specimen | Fixed | Still with a defect |
+|---|---|---|
+| spc-04 | 09, 01 ³ | — |
+| spc-06 | 07, 09b | — |
+| spc-07 | 09b | 02, 03, 06, 07, 07b, 09, 10b |
+| spc-10 | 01, 07b, 10 | 07 |
+| spc-12 | 06, 09b, 10b | 08b, 10 |
+| spc-15 | 01, 02, 11 | 06, 08 |
+| spc-17 | 04, 02 ³, 08 ³ | — |
+| spc-19 | 05 | — |
+
+³ Still showed long triangles (spc-04 epo-01, spc-17 epo-02) or a small blue spot (spc-17 epo-08) at the second check; fixed afterwards by joining the open boundary chains (no inverted face left, longest cap edge 2.5 mm instead of 101.7 mm on spc-04 epo-01). To be confirmed visually.
+
+The epochs still with a defect are those with a **really folded opening**, which keeps a curved cap: blue areas coming out of the cap (the harmonic membrane folds) and "webbing" where the cap goes beyond the edge. An automatic check (faces whose normal points into the closed mesh) finds no inverted face on the 21 other epochs above.
+
+### How they are closed
+
+**Implemented** (see the pipeline description above):
+
+1. **Straighten the small folds of the projected loop** (`untangle_projected_loop`): when the projected loop crosses itself over at most 20 vertices, these vertices are aligned on the chord of the fold, in the plane, and the planar cap is kept. The number of epochs with a curved cap drops from 38 to 12.
+2. **Join the open boundary chains** (`_join_open_chains`) through the non-manifold edges linking their ends, instead of closing each chain on itself by an edge of up to 10 cm.
+3. **Remove the small open fragments** (`remove_small_open_fragments`) before capping: the blue spots of spc-06 epo-07 and spc-15 epo-11 disappear.
+4. **Remove the parts inside the brain and the far blobs** (`remove_inner_and_far_parts`): no part is left more than 5 mm away from the brain, and the separate parts drop from 5610 to 1524 over the 130 epochs (small fragments close to the outer surface, kept).
+5. **Orient each closed part outward** (`orient_parts_outward`): dozens of inverted fragments per epoch are fixed.
+
+Together, they change the volumes by 0 to +2.8 % (mean +0.1 %): the inverted inner fragments are no longer subtracted, and the planar caps replacing curved ones add a small wedge.
+
+**Still open:**
+
+6. **The really folded openings** (12 epochs, mostly spc-07): a better curved cap (e.g. minimal surface or fairing instead of harmonic interpolation), a larger straightening, or splitting the opening into parts that can each be projected.
+7. **The tissue flaps under the cap** (spc-17 epo-04): detect the surface of the scan lying within a fraction of a millimetre of the planar cap, inside the opening, and remove it before capping. Raising the cap slightly could also hide them, at the cost of a little more volume.
+8. **The "b" epochs**: find their meaning in the BraDiPho documentation, or choose one version per epoch as suggested above.
 
 ---
 
@@ -410,7 +443,7 @@ The planar cap is placed on the outer side of the opening, at its highest point;
 
 ### 🔹 2. Input defects are repaired locally
 
-Small flaps and the extra faces of non-manifold edges that cannot be split are removed, and the holes this opens are capped. These are a few triangles per epoch, but the output is not strictly the input surface plus caps.
+Small flaps, small open fragments, the extra faces of non-manifold edges that cannot be split, and the parts floating inside the brain or far from it are removed; the holes this opens are capped. The output is therefore not strictly the input surface plus caps.
 
 ### 🔹 3. Duplicated vertices in the output
 
@@ -439,8 +472,8 @@ The triangulation and debug exports scale with mesh size.
 
 ### 🔧 Algorithmic Improvements
 
-- **Visual validation of the curved caps**
-  The results above are checked numerically; the curved caps (38 epochs) should also be inspected visually.
+- **A better cap for the really folded openings**
+  The 12 epochs that still have a curved cap (mostly spc-07) show small inverted areas and "webbing" where the harmonic membrane folds. Options: a minimal surface or fairing instead of harmonic interpolation, a larger straightening of folds, or splitting the opening into parts that can each be projected.
 
 - **Faster repair passes**
   Vectorize the orientation propagation and the non-manifold repairs, which dominate the processing time.
@@ -488,10 +521,11 @@ Command line options keep their original names (`--meshFilter`, `--capsOnly`, `-
 |---|---|
 | Debug exports | `_save`, `_save_lines`, `_save_points` |
 | Mesh helpers | edge incidence, manifold patches, signed area and volume; `_get_bool_attr_or_method` (not used at the moment) |
-| Input repair | `collapse_short_edges`, `remove_duplicate_faces`, `remove_small_flaps`, `split_non_manifold_edges`, `drop_extra_faces_on_non_manifold_edges`, `make_orientation_consistent`, `orient_outward`, `repair_input_mesh` |
-| Boundary loops | `extract_boundary_loops`, loop orientation, outward direction |
-| Planar cap | plane fit and placement, seeding, `triangulate_planar_cap`, `create_side_band`, `make_cap`; `keep_seeds_far_from_loop` (not used at the moment) |
+| Input repair | `collapse_short_edges`, `remove_duplicate_faces`, `remove_small_flaps`, `remove_small_open_fragments`, `split_non_manifold_edges`, `drop_extra_faces_on_non_manifold_edges`, `make_orientation_consistent`, `orient_outward`, `repair_input_mesh` |
+| Boundary loops | `extract_boundary_loops`, `_join_open_chains`, loop orientation, outward direction |
+| Planar cap | plane fit and placement, `untangle_projected_loop`, seeding, `triangulate_planar_cap`, `create_side_band`, `make_cap`; `keep_seeds_far_from_loop` (not used at the moment) |
 | Curved and fan caps | `make_curved_cap`, `make_fan_cap`, repair caps |
+| Fragments of the closed mesh | `remove_inner_and_far_parts`, `orient_parts_outward`, `clean_closed_parts` |
 | Hole-closing pipeline | `_attach_caps`, final repair passes, `create_caps`, `close_mesh_holes` |
 | Command line | `build_argparser`, `main` |
 
