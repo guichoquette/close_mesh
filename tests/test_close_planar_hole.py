@@ -17,9 +17,11 @@ from collections import Counter
 import numpy as np
 import pyvista as pv
 from scipy.spatial import cKDTree
+from shapely.geometry import Polygon
 
 from close_opening_scripts.close_planar_hole import (
     _find_projection_plane,
+    _join_open_chains,
     _orient_loop_against_mesh,
     create_side_band,
     drop_extra_faces_on_non_manifold_edges,
@@ -29,10 +31,14 @@ from close_opening_scripts.close_planar_hole import (
     make_fan_cap,
     make_orientation_consistent,
     orient_outward,
+    orient_parts_outward,
     remove_duplicate_faces,
+    remove_inner_and_far_parts,
     remove_small_flaps,
+    remove_small_open_fragments,
     split_non_manifold_edges,
     triangulate_planar_cap,
+    untangle_projected_loop,
 )
 
 CAP_ARGS = argparse.Namespace(debug=None, debug_loop="", seedStepFactor=4.0, seedDecimator=4.0)
@@ -93,6 +99,11 @@ def sphere_with_fin() -> tuple[pv.PolyData, np.ndarray]:
     a, b = (int(v) for v in faces[0][:2])
     points = np.vstack([base.points, [[0.0, 0.0, 2.0]]])
     return mesh_from_faces(points, np.vstack([faces, [[b, a, len(points) - 1]]])), faces
+
+
+def small_sphere(center: tuple[float, float, float], radius: float = 0.1) -> pv.PolyData:
+    """Small closed sphere, oriented outward."""
+    return pv.Sphere(radius=radius, center=center, theta_resolution=12, phi_resolution=12).triangulate().clean()
 
 
 def outward_tetrahedron(points: np.ndarray, ids: tuple[int, int, int, int]) -> np.ndarray:
@@ -159,6 +170,43 @@ class InputRepairTests(unittest.TestCase):
         self.assertGreater(signed_volume(orient_outward(inward)), 0)
 
 
+class FragmentTests(unittest.TestCase):
+    """Fragments of scan debris around the brain."""
+
+    def test_removes_small_open_fragment_and_keeps_closed_ones(self):
+        """An isolated open disc is removed; a small closed sphere and the brain are kept."""
+        brain = sphere()
+        disc = pv.Disc(center=(3, 0, 0), inner=0, outer=0.1, c_res=8).triangulate()
+        bubble = small_sphere((0, 3, 0))
+        mesh = brain.merge(disc).merge(bubble)
+        cleaned = remove_small_open_fragments(mesh)
+
+        self.assertEqual(cleaned.n_cells, brain.n_cells + bubble.n_cells)
+
+    def test_removes_inner_and_far_parts_only(self):
+        """Parts inside the brain or far from it are removed; a part just outside is kept."""
+        brain = sphere()
+        inner, far, near = small_sphere((0, 0, 0)), small_sphere((5, 0, 0)), small_sphere((0, 0, 0.62))
+        cleaned = remove_inner_and_far_parts(brain.merge(inner).merge(far).merge(near))
+
+        self.assertEqual(cleaned.n_cells, brain.n_cells + near.n_cells)
+        self.assertAlmostEqual(signed_volume(cleaned), signed_volume(brain) + signed_volume(near), places=6)
+
+    def test_orients_each_closed_part_outward(self):
+        """A small sphere wound inward is flipped; the brain is unchanged."""
+        brain = sphere()
+        inward = small_sphere((0, 0, 3)).flip_faces()
+        oriented = orient_parts_outward(brain.merge(inward))
+
+        self.assertAlmostEqual(signed_volume(oriented), signed_volume(brain) + abs(signed_volume(inward)), places=6)
+
+    def test_keeps_flat_part_as_it_is(self):
+        """A closed part of zero thickness has no inside and is not flipped."""
+        points = np.array([[0, 0, 3], [1, 0, 3], [0, 1, 3]], dtype=float)
+        flat = mesh_from_faces(points, np.array([[0, 1, 2], [0, 2, 1]]))
+        np.testing.assert_array_equal(faces_of(orient_parts_outward(flat)), faces_of(flat))
+
+
 class NonManifoldEdgeTests(unittest.TestCase):
     """Repair of the edges shared by more than two faces."""
 
@@ -208,6 +256,19 @@ class BoundaryLoopTests(unittest.TestCase):
 
         self.assertEqual(len(loop_edges), len(set(loop_edges)))
         self.assertEqual(set(loop_edges), boundary)
+
+    def test_joins_open_chains_through_non_manifold_edges(self):
+        """Two open chains whose ends are linked by non-manifold edges form one loop, whatever their direction."""
+        nm = {2: {3}, 3: {2}, 5: {0}, 0: {5}}
+        for second in ([3, 4, 5], [5, 4, 3]):
+            with self.subTest(second=second):
+                (loop,) = _join_open_chains([[0, 1, 2], second], nm)
+                self.assertEqual(loop.tolist(), [0, 1, 2, 3, 4, 5])
+
+    def test_closes_a_chain_that_cannot_be_joined(self):
+        """A chain with no non-manifold edge at its ends is closed between them."""
+        (loop,) = _join_open_chains([[0, 1, 2, 3]], {})
+        self.assertEqual(loop.tolist(), [0, 1, 2, 3])
 
     def test_reverses_loop_that_follows_mesh_winding(self):
         """A loop running like the mesh triangle is reversed."""
@@ -265,6 +326,26 @@ class ProjectionPlaneTests(unittest.TestCase):
         t = np.linspace(0, 2 * np.pi, 20, endpoint=False)
         _, _, _, normal = _find_projection_plane(np.c_[np.cos(t), np.sin(t), np.zeros_like(t)])
         self.assertAlmostEqual(abs(normal[2]), 1.0)
+
+    def test_straightens_a_micro_fold(self):
+        """A circle with one vertex folded over its neighbour becomes a simple polygon, other vertices unchanged."""
+        t = np.linspace(0, 2 * np.pi, 40, endpoint=False)
+        uv = np.c_[np.cos(t), np.sin(t)]
+        folded = uv.copy()
+        folded[10], folded[11] = uv[11], uv[10]          # swapping two vertices makes the loop cross itself
+        untangled = untangle_projected_loop(folded)
+
+        self.assertIsNotNone(untangled)
+        self.assertTrue(Polygon(untangled).is_valid)
+        changed = np.where(np.any(untangled != folded, axis=1))[0]
+        self.assertTrue(set(changed.tolist()) <= set(range(8, 14)))
+
+    def test_micro_fold_keeps_a_planar_cap(self):
+        """A flat loop with a micro-fold still gets a plane."""
+        t = np.linspace(0, 2 * np.pi, 40, endpoint=False)
+        loop = np.c_[np.cos(t), np.sin(t), np.zeros_like(t)]
+        loop[[10, 11]] = loop[[11, 10]]
+        self.assertIsNotNone(_find_projection_plane(loop))
 
     def test_knotted_loop_has_no_valid_plane(self):
         """A trefoil knot crosses itself in every planar projection."""

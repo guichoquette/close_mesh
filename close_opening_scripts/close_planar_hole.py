@@ -8,22 +8,25 @@ openings are mostly near-planar cuts, but usable on any surface mesh.
 Pipeline (see `create_caps`)
 ----------------------------
 1. Load the mesh, optionally collapse very short edges (``--meshFilter``).
-2. Repair the input: remove duplicated triangles and small flaps, split the
-   sheets meeting on non-manifold edges, make the winding consistent and
-   orient the mesh outward.
+2. Repair the input: remove duplicated triangles, small flaps and small open
+   fragments, split the sheets meeting on non-manifold edges, make the
+   winding consistent and orient the mesh outward.
 3. Extract the boundary loops.
 4. Close each loop with a cap:
 
    - a **planar cap** when the loop projects on its best-fit (SVD) plane as a
-     simple polygon: the plane is placed at the top of the loop on the outer
-     side of the mesh, the polygon is triangulated with seed points
-     (constrained Delaunay, Triangle) and joined to the 3D loop by a side band;
+     simple polygon, after straightening its small folds: the plane is placed
+     at the top of the loop on the outer side of the mesh, the polygon is
+     triangulated with seed points (constrained Delaunay, Triangle) and
+     joined to the 3D loop by a side band;
    - a **curved (harmonic) cap** otherwise.
 
 5. Attach the caps to the mesh by vertex index.
 6. Run final repair passes on the capped mesh (remaining non-manifold edges,
    small holes they leave).
-7. Report whether the result is watertight and, if so, its volume.
+7. Remove the fragments floating inside the brain or far from it, and orient
+   every remaining part outward.
+8. Report whether the result is watertight and, if so, its volume.
 
 Usage
 -----
@@ -49,8 +52,9 @@ from matplotlib.path import Path as MplPath
 from scipy.sparse import coo_matrix, diags
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import splu
-from scipy.spatial import Delaunay
-from shapely.geometry import Polygon
+from scipy.spatial import Delaunay, cKDTree
+from shapely.geometry import LineString, Polygon
+from shapely.strtree import STRtree
 
 # Maximum size (in faces) of a patch removed as a flap by `remove_small_flaps`
 MAX_FLAP_FACES = 20
@@ -58,6 +62,15 @@ MAX_FLAP_FACES = 20
 ON_PLANE_TOLERANCE = 1e-6
 # Number of final repair passes run on the capped mesh
 FINAL_REPAIR_PASSES = 3
+# Largest fold of the projected loop (in vertices) straightened to keep a planar cap
+MAX_FOLD_VERTICES = 20
+# Largest isolated open part (in faces) removed as scan debris before capping
+MAX_OPEN_FRAGMENT_FACES = 1000
+# Parts farther than this fraction of the brain size (bounding box diagonal) are removed
+FAR_PART_DISTANCE = 0.05
+# A closed part is oriented by the sign of its volume only if |V| > FLAT_PART_RATIO * area^1.5
+# (a sphere has V = 0.094 area^1.5; a flat, zero-thickness part has V ~ 0 and no inside)
+FLAT_PART_RATIO = 0.01
 
 
 # ============================================================================
@@ -316,6 +329,23 @@ def _get_bool_attr_or_method(obj: object, name: str, default: bool = True) -> bo
         except TypeError:
             pass
     return bool(value)
+
+
+def _connected_parts(mesh: pv.PolyData) -> np.ndarray:
+    """
+    Label the connected parts of a mesh (faces sharing a vertex).
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Triangle mesh.
+
+    Returns
+    -------
+    labels : np.ndarray, shape (M,)
+        Part id of every face, in the order of ``mesh.faces``.
+    """
+    return np.asarray(mesh.connectivity(extraction_mode="all").cell_data["RegionId"])
 
 
 def _signed_volume(mesh: pv.PolyData) -> float:
@@ -678,6 +708,40 @@ def drop_extra_faces_on_non_manifold_edges(mesh: pv.PolyData) -> pv.PolyData:
     return _faces_to_polydata(mesh.points, faces[keep])
 
 
+def remove_small_open_fragments(mesh: pv.PolyData, max_faces: int = MAX_OPEN_FRAGMENT_FACES) -> pv.PolyData:
+    """
+    Remove the small isolated parts that are open: pieces of scan debris.
+
+    Such a fragment, often lying at the cut, would otherwise be closed as a
+    tiny flat part with its own cap, which may end up wound inward and is
+    seen as an inverted spot on the cap. Closed fragments are kept here (see
+    `remove_inner_and_far_parts`), and the largest part is always kept.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Triangle mesh.
+    max_faces : int, optional
+        Largest fragment removed. Default is `MAX_OPEN_FRAGMENT_FACES`.
+
+    Returns
+    -------
+    mesh : pv.PolyData
+        Mesh without small open fragments.
+    """
+    faces = mesh.faces.reshape(-1, 4)[:, 1:]
+    labels = _connected_parts(mesh)
+    size = np.bincount(labels)
+    _, order, start, counts = _edge_incidence(faces, mesh.n_points)
+    is_open = np.zeros(len(size), dtype=bool)
+    is_open[labels[order[start[counts == 1]] // 3]] = True
+    drop = is_open & (size <= max_faces)
+    drop[size.argmax()] = False
+    if not drop.any():
+        return mesh
+    return _faces_to_polydata(mesh.points, faces[~drop[labels]])
+
+
 def make_orientation_consistent(mesh: pv.PolyData) -> pv.PolyData:
     """
     Wind neighbouring triangles consistently, without crossing non-manifold edges.
@@ -770,9 +834,9 @@ def repair_input_mesh(mesh: pv.PolyData) -> pv.PolyData:
     """
     Repair a mesh so that each boundary edge has a well-defined winding the caps can follow.
 
-    Removes duplicated triangles and small flaps, separates the sheets
-    meeting on non-manifold edges, propagates a consistent winding and
-    orients the mesh outward.
+    Removes duplicated triangles, small flaps and small open fragments,
+    separates the sheets meeting on non-manifold edges, propagates a
+    consistent winding and orients the mesh outward.
 
     Parameters
     ----------
@@ -786,6 +850,7 @@ def repair_input_mesh(mesh: pv.PolyData) -> pv.PolyData:
     """
     mesh = remove_duplicate_faces(mesh)
     mesh = remove_small_flaps(mesh)
+    mesh = remove_small_open_fragments(mesh)
     mesh = split_non_manifold_edges(mesh)
     return orient_outward(make_orientation_consistent(mesh))
 
@@ -801,9 +866,14 @@ def extract_boundary_loops(mesh: pv.PolyData) -> list[np.ndarray]:
     Boundary edges (used by a single triangle) are chained into loops by
     walking the boundary edge by edge. A vertex shared by two openings
     (pinched boundary) is visited twice: the sub-cycle closed at that point
-    is cut out as its own loop, so every loop is simple. Non-manifold edges
-    can leave a boundary as an open chain (odd-degree end vertices): walks
-    start from those ends first, and such a chain is closed between its ends.
+    is cut out as its own loop, so every loop is simple.
+
+    Non-manifold edges can cut a boundary into open chains (odd-degree end
+    vertices): walks start from those ends first. The chains are then joined
+    end to end through the non-manifold edges linking their ends, which
+    rebuilds the opening they belong to; a chain that cannot be joined is
+    closed between its ends. (Closing every chain on itself could add an
+    edge of several centimetres across the opening.)
 
     Parameters
     ----------
@@ -819,13 +889,18 @@ def extract_boundary_loops(mesh: pv.PolyData) -> list[np.ndarray]:
     faces = mesh.faces.reshape(-1, 4)[:, 1:]
     edge_count = Counter(tuple(sorted((int(f[k]), int(f[(k + 1) % 3])))) for f in faces for k in range(3))
     neighbours = defaultdict(list)
+    nm_neighbours = defaultdict(set)
     for (a, b), count in edge_count.items():
         if count == 1:
             neighbours[a].append(b)
             neighbours[b].append(a)
+        elif count > 2:
+            nm_neighbours[a].add(b)
+            nm_neighbours[b].add(a)
 
     used = set()
     loops = []
+    open_chains = []
     starts = sorted(neighbours, key=lambda v: len(neighbours[v]) % 2 == 0)  # open chain ends first
     for start in starts:
         for first in neighbours[start]:
@@ -851,11 +926,53 @@ def extract_boundary_loops(mesh: pv.PolyData) -> list[np.ndarray]:
                 cur = nxt
                 candidates = [w for w in neighbours[cur] if tuple(sorted((cur, w))) not in used]
                 if not candidates:
-                    # Open chain: close it between its ends
-                    if len(path) > 2:
-                        loops.append(np.array(path, dtype=int))
+                    if len(path) > 1:
+                        open_chains.append(path)  # open chain, joined to the others below
                     break
                 nxt = candidates[0]
+    return loops + _join_open_chains(open_chains, nm_neighbours)
+
+
+def _join_open_chains(chains: list[list[int]], nm_neighbours: dict[int, set[int]]) -> list[np.ndarray]:
+    """
+    Join open boundary chains end to end through the non-manifold edges linking their ends.
+
+    Parameters
+    ----------
+    chains : list of list of int
+        Open chains of boundary vertices, in order.
+    nm_neighbours : dict
+        For each vertex, the vertices it shares a non-manifold edge with.
+
+    Returns
+    -------
+    loops : list of np.ndarray
+        Closed loops (more than two vertices). A loop is closed by a
+        non-manifold edge when one links its ends, otherwise directly
+        between its ends.
+    """
+    pool = [list(chain) for chain in chains]
+    loops = []
+    while pool:
+        loop = pool.pop(0)
+        while loop[-1] not in nm_neighbours.get(loop[0], ()) or len(loop) < 3:
+            end = loop[-1]
+            linked = nm_neighbours.get(end, set()) | {end}
+            for k, chain in enumerate(pool):
+                if chain[0] in linked:
+                    loop += chain[1:] if chain[0] == end else chain
+                elif chain[-1] in linked:
+                    loop += chain[-2::-1] if chain[-1] == end else chain[::-1]
+                else:
+                    continue
+                del pool[k]
+                break
+            else:
+                break  # no chain to join: closed between its ends
+        if loop[-1] == loop[0]:
+            loop = loop[:-1]
+        if len(loop) > 2:
+            loops.append(np.array(loop, dtype=int))
     return loops
 
 
@@ -1002,14 +1119,88 @@ def fit_plane_svd(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarra
     return center, vh[0, :], vh[1, :], vh[2, :]
 
 
+def _crossing_segments(uv: np.ndarray) -> list[tuple[int, int]]:
+    """
+    Pairs of non-adjacent edges of a closed 2D polyline that intersect.
+
+    Parameters
+    ----------
+    uv : np.ndarray, shape (N, 2)
+        Polyline vertices; edge i joins vertex i to vertex i + 1 (closing edge included).
+
+    Returns
+    -------
+    pairs : list of tuple of int
+        Indices (i, j), i < j, of the crossing edges.
+    """
+    n = len(uv)
+    segments = [LineString([uv[i], uv[(i + 1) % n]]) for i in range(n)]
+    tree = STRtree(segments)
+    pairs = []
+    for i, segment in enumerate(segments):
+        for j in tree.query(segment):
+            j = int(j)
+            if j > i + 1 and not (i == 0 and j == n - 1) and segment.intersects(segments[j]):
+                pairs.append((i, j))
+    return pairs
+
+
+def untangle_projected_loop(uv: np.ndarray, max_fold: int = MAX_FOLD_VERTICES,
+                            max_rounds: int = 5) -> np.ndarray | None:
+    """
+    Straighten the small folds of a projected loop so that it becomes a simple polygon.
+
+    On most large BraDiPho openings, the projected loop crosses itself only at
+    a micro-fold of a few vertices. The vertices between two crossing edges
+    (along the shorter side, at most `max_fold` vertices) are moved onto the
+    chord joining both sides of the fold, in the plane. The side band still
+    joins each 3D vertex to its (moved) projection, so the cap stays closed.
+
+    Parameters
+    ----------
+    uv : np.ndarray, shape (N, 2)
+        Projected loop in the (u, v) frame of the cap plane.
+    max_fold : int, optional
+        Largest fold straightened. Default is `MAX_FOLD_VERTICES`.
+    max_rounds : int, optional
+        Number of straightening rounds before giving up. Default is 5.
+
+    Returns
+    -------
+    uv : np.ndarray, shape (N, 2) or None
+        The loop as a simple polygon, or None if a fold is too large.
+    """
+    uv = np.array(uv, dtype=float)
+    n = len(uv)
+    for _ in range(max_rounds):
+        if Polygon(uv).is_valid:
+            return uv
+        pairs = _crossing_segments(uv)
+        if not pairs:
+            return None
+        for i, j in pairs:
+            if j - i <= max_fold:
+                first, last = i, j + 1          # edge i starts at vertex i, edge j ends at vertex j + 1
+            elif n - (j - i) <= max_fold:
+                first, last = j, i + 1 + n      # the shorter side wraps around the start of the loop
+            else:
+                return None
+            moved = np.arange(first + 1, last) % n
+            weight = (np.arange(1, last - first) / (last - first))[:, None]
+            uv[moved] = (1 - weight) * uv[first % n] + weight * uv[last % n]
+    return uv if Polygon(uv).is_valid else None
+
+
 def _find_projection_plane(loop_points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
     """
     Return the SVD best-fit plane if the loop projects on it as a simple polygon.
 
-    A warped opening can project to a self-intersecting polygon, for which no
-    valid planar cap exists; it gets a curved cap instead. (Tilted planes
-    were tried once, but on large openings the cap then lies far from the
-    loop and the side band adds or removes a large wedge of volume.)
+    Small folds of the projected loop are accepted: they are straightened by
+    `untangle_projected_loop`. A really warped opening projects to a
+    self-intersecting polygon, for which no valid planar cap exists; it gets
+    a curved cap instead. (Tilted planes were tried once, but on large
+    openings the cap then lies far from the loop and the side band adds or
+    removes a large wedge of volume.)
 
     Parameters
     ----------
@@ -1020,12 +1211,13 @@ def _find_projection_plane(loop_points: np.ndarray) -> tuple[np.ndarray, np.ndar
     -------
     plane : tuple of np.ndarray or None
         ``(center, u, v, normal)`` of the SVD plane, or None if the projected
-        loop is not a simple polygon.
+        loop is not a simple polygon, even after straightening its small folds.
     """
     center, u, v, n = fit_plane_svd(loop_points)
     rel = loop_points - center
-    polygon = Polygon(np.column_stack([rel @ u, rel @ v]))
-    if polygon.is_valid and polygon.area > 0:
+    uv = np.column_stack([rel @ u, rel @ v])
+    polygon = Polygon(uv)
+    if (polygon.is_valid and polygon.area > 0) or untangle_projected_loop(uv) is not None:
         return center, u, v, n
     return None
 
@@ -1365,7 +1557,8 @@ def make_cap(mesh: pv.PolyData, loop_indices: np.ndarray, args: argparse.Namespa
     2. Fit its SVD plane; if the loop does not project on it as a simple
        polygon, return a curved cap (`make_curved_cap`) instead.
     3. Move the plane to the top of the loop, on the outer side of the mesh.
-    4. Project the loop on the plane, seed a regular grid inside it.
+    4. Project the loop on the plane (straightening its small folds), seed a
+       regular grid inside it.
     5. Triangulate the polygon and its seeds, wind the triangles like the loop.
     6. Join the 3D loop to the projected loop with a side band.
 
@@ -1403,8 +1596,13 @@ def make_cap(mesh: pv.PolyData, loop_indices: np.ndarray, args: argparse.Namespa
     plane_point = place_plane_on_loop_top(plane_point, plane_normal, loop_points=loop_points,
                                           outward_hint=_outward_direction(mesh, loop_indices))
 
-    # 4) Projected loop and seeds inside an inward offset of the polygon
+    # 4) Projected loop, small folds straightened, and seeds inside an inward offset of the polygon
     projected_loop = project_points_on_plane(loop_points, plane_point, plane_normal)
+    rel = projected_loop - plane_point
+    loop_uv = np.column_stack([rel @ u_hat, rel @ v_hat])
+    if not Polygon(loop_uv).is_valid:
+        loop_uv = untangle_projected_loop(loop_uv)
+        projected_loop = plane_point + loop_uv[:, 0][:, None] * u_hat + loop_uv[:, 1][:, None] * v_hat
     poly_uv, uu, vv, grid_points = seed_grid_on_plane(u_hat, v_hat, plane_point, projected_loop, mean_seg, args)
     if args.debug:
         _save_points(pv.PolyData(grid_points), "debug_grid_pts.ply", args)
@@ -1599,6 +1797,120 @@ def _make_repair_cap(mesh: pv.PolyData, loop_indices: np.ndarray, args: argparse
 
 
 # ============================================================================
+# Fragments of the closed mesh
+# ============================================================================
+
+def remove_inner_and_far_parts(mesh: pv.PolyData, far_distance: float = FAR_PART_DISTANCE) -> pv.PolyData:
+    """
+    Remove the parts floating inside the brain and the blobs far from it.
+
+    The scans contain many small closed fragments. Those inside the brain
+    (the largest part) are pieces of scan debris: depending on their
+    orientation, their volume was subtracted from or added twice to the
+    total. Those far from the brain (blobs) are not part of it either. The
+    small fragments close to the outer surface are kept.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Closed triangle mesh (each part closed).
+    far_distance : float, optional
+        Parts whose closest vertex is farther from the brain than this
+        fraction of its bounding box diagonal are removed. Default is
+        `FAR_PART_DISTANCE`.
+
+    Returns
+    -------
+    mesh : pv.PolyData
+        Mesh without inner and far parts.
+    """
+    faces = mesh.faces.reshape(-1, 4)[:, 1:]
+    labels = _connected_parts(mesh)
+    n_parts = labels.max() + 1
+    if n_parts == 1:
+        return mesh
+    brain = np.bincount(labels).argmax()
+    brain_mesh = _faces_to_polydata(mesh.points, faces[labels == brain]).clean(point_merging=False)
+    brain_points = np.asarray(brain_mesh.points)
+    diagonal = np.linalg.norm(brain_points.max(axis=0) - brain_points.min(axis=0))
+    tree = cKDTree(brain_points)
+
+    # A few vertices of each other part: distance to the brain, and inside test (majority)
+    drop = np.zeros(n_parts, dtype=bool)
+    samples, owner = [], []
+    for part in range(n_parts):
+        if part == brain:
+            continue
+        vertices = np.unique(faces[labels == part])
+        if tree.query(mesh.points[vertices])[0].min() > far_distance * diagonal:
+            drop[part] = True
+            continue
+        picked = vertices[np.linspace(0, len(vertices) - 1, min(5, len(vertices))).astype(int)]
+        samples.append(mesh.points[picked])
+        owner += [part] * len(picked)
+    if samples:
+        inside = pv.PolyData(np.vstack(samples)).select_interior_points(brain_mesh, check_surface=False)
+        is_inside = np.asarray(inside.point_data["selected_points"]).astype(bool)
+        owner = np.asarray(owner)
+        for part in np.unique(owner):
+            drop[part] = is_inside[owner == part].mean() > 0.5
+
+    if not drop.any():
+        return mesh
+    return _faces_to_polydata(mesh.points, faces[~drop[labels]])
+
+
+def orient_parts_outward(mesh: pv.PolyData) -> pv.PolyData:
+    """
+    Orient every closed part of the mesh outward, not only the mesh as a whole.
+
+    Many small closed fragments of the scans are wound inward: they are seen
+    as inverted spots and their volume is subtracted. Each part whose signed
+    volume is clearly negative is flipped; flat parts (zero thickness, no
+    inside) are left as they are.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Closed triangle mesh.
+
+    Returns
+    -------
+    mesh : pv.PolyData
+        Mesh whose parts all have a positive volume.
+    """
+    faces = mesh.faces.reshape(-1, 4)[:, 1:].copy()
+    labels = _connected_parts(mesh)
+    tri = mesh.points[faces].astype(np.float64)
+    volume = np.bincount(labels, weights=np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2])) / 6.0)
+    area = np.bincount(labels, weights=np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]),
+                                                      axis=1) / 2.0)
+    inverted = (volume < 0) & (np.abs(volume) > FLAT_PART_RATIO * area ** 1.5)
+    flip = inverted[labels]
+    if not flip.any():
+        return mesh
+    faces[flip] = faces[flip][:, ::-1]
+    return _faces_to_polydata(mesh.points, faces)
+
+
+def clean_closed_parts(mesh: pv.PolyData) -> pv.PolyData:
+    """
+    Remove the inner and far parts, then orient the remaining parts outward.
+
+    Parameters
+    ----------
+    mesh : pv.PolyData
+        Closed triangle mesh.
+
+    Returns
+    -------
+    mesh : pv.PolyData
+        Cleaned mesh.
+    """
+    return orient_parts_outward(remove_inner_and_far_parts(mesh))
+
+
+# ============================================================================
 # Hole-closing pipeline
 # ============================================================================
 
@@ -1726,7 +2038,7 @@ def create_caps(args: argparse.Namespace) -> pv.PolyData:
     if not loops:
         if args.capsOnly:
             return pv.PolyData()
-        return orient_outward(base).compute_normals(consistent_normals=False, inplace=False)
+        return clean_closed_parts(orient_outward(base)).compute_normals(consistent_normals=False, inplace=False)
 
     # 4) One cap per opening
     caps, cap_loops = [], []
@@ -1740,9 +2052,10 @@ def create_caps(args: argparse.Namespace) -> pv.PolyData:
     if args.capsOnly:
         return caps[-1]
 
-    # 5) Attach the caps, run the final repair passes. Caps are wound against the mesh by construction,
-    #    so VTK must not reorder faces when computing normals (it would cross non-manifold edges).
-    out = _final_repair_passes(_attach_caps(base, cap_loops, caps), args)
+    # 5) Attach the caps, run the final repair passes, remove the inner and far parts and orient each part
+    #    outward. Caps are wound against the mesh by construction, so VTK must not reorder faces when
+    #    computing normals (it would cross non-manifold edges).
+    out = clean_closed_parts(_final_repair_passes(_attach_caps(base, cap_loops, caps), args))
     return out.compute_normals(consistent_normals=False, inplace=False)
 
 
