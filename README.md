@@ -26,6 +26,11 @@ close_mesh/
 ├── close_opening_scripts/
 │   └── close_planar_hole.py                 # Main hole-closing algorithm
 │
+├── experiments/
+│   ├── close_planar_hole_option_a.py        # Option A: larger straightening of folds
+│   ├── close_planar_hole_option_b.py        # Option B: option A + guard on the added volume
+│   └── compare_options.py                   # Compares the current script, A and B on problem epochs
+│
 ├── tests/
 │   └── test_close_planar_hole.py            # Unit tests of the closing pipeline
 │
@@ -338,9 +343,46 @@ Together, they change the volumes by 0 to +2.8 % (mean +0.1 %): the inverted inn
 
 **Still open:**
 
-6. **The really folded openings** (12 epochs, mostly spc-07): a better curved cap (e.g. minimal surface or fairing instead of harmonic interpolation), a larger straightening, or splitting the opening into parts that can each be projected.
-7. **The tissue flaps under the cap** (spc-17 epo-04): detect the surface of the scan lying within a fraction of a millimetre of the planar cap, inside the opening, and remove it before capping. Raising the cap slightly could also hide them, at the cost of a little more volume.
+6. **The really folded openings** (12 epochs, mostly spc-07): a larger straightening is being evaluated (see [Experiments](#-experiments-larger-straightening-of-the-folds-options-a-and-b) below); other options are a better curved cap (e.g. minimal surface or fairing instead of harmonic interpolation) or splitting the opening into parts that can each be projected.
+7. **The tissue flaps and small holes under the cap** (spc-17 epo-04, spc-15 epo-08, spc-07 epo-09): small holes of the surface lying just under the planar cap, whose own caps nearly overlap it. Detect the surface of the scan lying within a fraction of a millimetre of the planar cap, inside the opening, and remove it before capping. (Raising the whole cap was considered, but on the 6 epochs measured almost no tissue rises above the cap plane, at most 0.5 mm: it would not help.)
 8. **The "b" epochs**: find their meaning in the BraDiPho documentation, or choose one version per epoch as suggested above.
+
+---
+
+# 🧪 Experiments: Larger Straightening of the Folds (Options A and B)
+
+The openings that still get a curved cap are, in most cases, not really folded: their projected loop crosses itself at several places, mostly micro-folds of three vertices, but at least one fold is longer (40 to 287 vertices) than the 20 vertices the current script straightens. The area concerned is small (0.03 to 1.7 % of the opening), so these folds are nearly flat. Two options are tested, in separate files that leave the main script untouched:
+
+- **Option A** (`experiments/close_planar_hole_option_a.py`): folds of up to 10 % of the loop vertices (at least 20) are straightened, so more openings get a planar cap.
+- **Option B** (`experiments/close_planar_hole_option_b.py`): as option A, but when an opening needs a fold larger than 20 vertices to be straightened, its planar cap is kept only if the wedge of volume it adds (between the cap and a flat fan on the loop) is at most 5 % of the brain volume; otherwise the opening keeps its curved cap.
+
+```bash
+python experiments/compare_options.py [EPOCH ...]
+```
+
+It closes each epoch with the current script, option A and option B, exports the closed meshes with the caps in red to `brain_data/verification/options/option_a/` and `option_b/`, and writes `comparison.csv`. Without arguments, it uses the 12 epochs that still had a defect at the second visual check.
+
+### Results (2026-10-26)
+
+Volume change against the current script; inverted faces are cap faces whose normal points into the closed mesh.
+
+| Epoch | Option A | Option B | Current script |
+|---|---|---|---|
+| spc-10 epo-07 | +2.9 %, 1 curved cap, 6 inverted faces (0.5 mm²) | same as A | 2 curved caps, 93 inverted faces |
+| spc-12 epo-08b | +3.7 %, 1 curved cap, **0** inverted face | same as A | 2 curved caps, 20 inverted faces |
+| spc-12 epo-10 | +3.1 %, **0** curved cap, **0** inverted face | same as A | 1 curved cap, 36 inverted faces |
+| spc-07 epo-07 | +3.7 %, 1 curved cap, **0** inverted face | same as A | 2 curved caps, 23 inverted faces |
+| **spc-15 epo-06** | **+9.5 %**, 0 curved cap, 2 inverted faces (0.4 mm²) | = current script (guard) | 1 curved cap, 19 inverted faces (1.8 mm²) |
+| **spc-07 epo-03** | **+11.0 %**, 1 curved cap, 5 inverted faces (0.2 mm²) | = current script (guard) | 2 curved caps, 15 inverted faces (4.0 mm²) |
+| **spc-07 epo-06** | **+9.7 %**, 0 curved cap, 4 inverted faces (1.5 mm²) | = current script (guard) | 1 curved cap, 8 inverted faces (3.1 mm²) |
+| **spc-07 epo-07b** | **+5.7 %**, 0 curved cap, **0** inverted face | = current script (guard) | 1 curved cap, 14 inverted faces (2.1 mm²) |
+| spc-15 epo-08, spc-07 epo-02, 09, 10b | unchanged | unchanged | folds still too large (spc-07 epo-02, 10b), or small holes under the cap (spc-15 epo-08, spc-07 epo-09) |
+
+All the epochs stay watertight with both options.
+
+- **Both options** clearly improve spc-10 epo-07, spc-12 epo-08b, epo-10 and spc-07 epo-07, with a volume change of +2.9 to +3.7 %, in the usual range of a planar cap (up to +3.4 % against the reference elsewhere).
+- **The two options only differ on 4 deeply hollowed openings** (spc-15 epo-06, spc-07 epo-03, 06, 07b; the boundary of spc-15 epo-06 spans 10 mm in height). Option A gives them a clean planar cap but adds 5.7 to 11 % of volume, because the plane lies at the highest point of the boundary; option B keeps their current volume, and their visual defects.
+- **To decide:** whether the planar caps of option A look plausible on these 4 epochs (visual check of `option_a/` against `option_b/`), and whether such a volume increase is acceptable. The guard threshold of option B (5 %) can also be adjusted.
 
 ---
 
@@ -473,7 +515,7 @@ The triangulation and debug exports scale with mesh size.
 ### 🔧 Algorithmic Improvements
 
 - **A better cap for the really folded openings**
-  The 12 epochs that still have a curved cap (mostly spc-07) show small inverted areas and "webbing" where the harmonic membrane folds. Options: a minimal surface or fairing instead of harmonic interpolation, a larger straightening of folds, or splitting the opening into parts that can each be projected.
+  The 12 epochs that still have a curved cap (mostly spc-07) show small inverted areas and "webbing" where the harmonic membrane folds. A larger straightening of the folds is being evaluated (options A and B, see Experiments); other options are a minimal surface or fairing instead of harmonic interpolation, or splitting the opening into parts that can each be projected.
 
 - **Faster repair passes**
   Vectorize the orientation propagation and the non-manifold repairs, which dominate the processing time.
