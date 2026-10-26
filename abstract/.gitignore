@@ -1,0 +1,10 @@
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Keep the compiled abstract and its figures (ignored at the root)
+!abstract.pdf
+!figures/*.png

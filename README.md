@@ -53,7 +53,7 @@ close_mesh/
 You can download the meshes used during development from the official BraDiPho dataset:
 
 🔗 **BraDiPho – Brain Digital Fossils Archive**
-https://bradipho.eu/6-download.html
+https://bradipho.org/6-download.html
 
 All specimens and epochs are publicly available and easy to download. Only the `.ply` files are needed (the `.bin` files are CloudCompare projects).
 
