@@ -3,7 +3,7 @@
 % Limits: body 750 words, up to 5 figures (captions <= 500 characters each),
 %         Impact 40 words, Synopsis 100 words (plain text, no equations,
 %         references or citations), title 125 characters, plus one Preview
-%         Figure.
+%         Figure (3:2 aspect ratio).
 % Compile: pdflatex abstract.tex ; count words: python scripts/count_words.py
 %
 % Layout follows the order of the ECHO form: title, impact, synopsis, body,
@@ -29,12 +29,9 @@
 % ---------------------------------------------------------------------------
 \section*{Title (125 characters max)}
 
-\begin{itemize}
-  \item \textbf{A (104):} Closing 130 photogrammetric meshes of brain
-        dissections: watertight is easy, trustworthy volumes are not
-  \item \textbf{B (108):} Photogrammetry of brain dissections: automatic
-        mesh closing works, but acquisition limits volume measurement
-\end{itemize}
+% 108 characters
+Photogrammetry of brain dissections: automatic mesh closing works, but
+acquisition limits volume measurement
 
 % ---------------------------------------------------------------------------
 \section*{Impact Statement (40 words max)}
@@ -42,7 +39,7 @@
 % Word count: scripts/count_words.py
 Photogrammetric meshes of brain dissections can be closed automatically, but
 their scanned edge moves by millimetres between epochs, changing volumes as
-much as a dissection step: acquisition must be controlled before these
+much as one epoch of dissection: acquisition must be controlled before these
 meshes serve as quantitative references.
 
 % ---------------------------------------------------------------------------
@@ -60,33 +57,32 @@ BraDiPho archive, compared closing methods and checked that volume decreases
 along each dissection.
 
 \textbf{Results:} Every mesh became watertight, and closing methods changed
-volumes by 0.45\% on average. Yet volume increased in 15 of 104 dissection
-steps, by up to 15\%, mostly because the scanned edge moved 2 to 5~mm
-outward.
+volumes by 0.45\% on average. Yet volume increased in 15 of 104
+epoch-to-epoch changes, by up to 15\%, mostly because the scanned edge moved
+2 to 5~mm outward.
 
 % ---------------------------------------------------------------------------
 \section*{Introduction}
 
-Photogrammetry records a brain dissection as a series of textured 3D meshes,
-one per step (``epoch'')$^{1,2}$. The BraDiPho archive$^{1}$ shares such
-meshes to compare dissected pathways with diffusion MRI tractography, and
-surface scans of dissected brains already support quantitative
-measures$^{3}$. Measuring the volume removed at each step requires
-watertight surfaces. However, each mesh is open on the face that was not
-photographed and contains scanning defects (inverted faces, folds, floating
-debris), and a watertight mesh is not necessarily a correct one (Figure 1).
+Photogrammetry records a brain dissection as a series of textured 3D
+meshes$^{1,2}$: after each removal of tissue, the specimen is scanned again,
+giving one mesh per epoch. The BraDiPho archive$^{1}$ shares such meshes to
+compare dissected pathways with diffusion MRI tractography, and photographs
+of brain slices registered to surface scans already yield regional
+volumes$^{3}$. Measuring the volume removed at each epoch requires watertight
+surfaces. However, each mesh is open on the unphotographed face and contains scanning defects (inverted faces, folds, floating debris), and a
+watertight mesh is not necessarily a correct one (Figure 1).
 
 We closed the whole archive and asked: (1) can the meshes be closed
 automatically; (2) how much does the volume depend on how they are closed;
-and (3) do the volumes behave as a dissection should? We report what works,
-what does not, and what we wish we had known at the start.
+and (3) does the volume decrease at every epoch, as removing tissue
+requires? We report what works and what does not.
 
 % ---------------------------------------------------------------------------
 \section*{Methods}
 
-\textbf{Data.} We used all 130 epochs of the 12 BraDiPho specimens$^{1}$.
-Undocumented ``b'' variants were excluded from comparisons between epochs,
-leaving 104 consecutive steps.
+\textbf{Data.} We used all 130 epochs of the 12 BraDiPho specimens$^{1}$. Undocumented ``b'' variants were excluded from
+comparisons between epochs, leaving 104 epoch-to-epoch changes.
 
 \textbf{Repair and closing} (Python, VTK; Figure 2). (1) Duplicated faces,
 small flaps and small fragments are removed, non-manifold edges are split,
@@ -94,63 +90,67 @@ and faces are oriented outward. (2) Each opening, bounded by a loop, is
 closed by a cap. A plane is fitted to the loop; if the loop projects onto it
 without crossing itself (after straightening small folds of up to 20
 vertices), a planar cap is triangulated$^{4}$ on the outer side of the
-opening. Otherwise, a curved cap is built by harmonic interpolation.
-(3) Remaining defects and debris are removed, and each part is oriented
-outward. (4) Volume is computed only for watertight meshes.
+opening. Otherwise, a smooth curved cap is stretched across the loop like a
+soap film (harmonic interpolation).
+(3) Remaining defects and debris are removed and parts reoriented; volume
+is computed only for watertight meshes.
 
-\textbf{Evaluation.} Baselines: a simple fan closing of the same loops, two
+\textbf{Evaluation.} Baselines: a fan closing of the same loops, two
 variants of fold straightening (A: always planar; B: planar only if the cap
-adds at most 5\% of volume) and MeshFix$^{5}$, an independent repair and
-hole-filling method. We measured (a) watertightness; (b) the closing
+adds at most 5\% of volume) and MeshFix$^{5}$, an independent repair
+tool. We measured (a) watertightness; (b) the closing
 uncertainty, i.e.\ the volume difference between methods; (c) visual defects
 in every epoch; and (d) plausibility: dissection only removes tissue, so
-volume should decrease. Each increase was compared with 7 normal steps for
-scale (similarity ICP), displacement of the main cap and volume added by the
-caps.
+volume should decrease. Each increase was compared with 7 normal decreases
+(controls) for scale (similarity ICP), displacement of
+the main cap and volume added by the caps.
 
 % ---------------------------------------------------------------------------
 \section*{Results}
 
 \textbf{What works.} All 130 epochs became watertight (Figure 2).
 Straightening small folds reduced the epochs needing a curved cap from 38 to
-12. Volumes differed from the fan closing by 0.45\% on average (maximum
-3.4\%) and from MeshFix by \todo{mean, max over 130 epochs; 0.73\% and
-2.2\% on the first 21} (Figure 3c). After corrections, the epochs with
-visual defects dropped from 29 to 12.
+12. Volumes differed from the fan closing by 0.45\% and from MeshFix by
+0.34\% on average (maxima 3.4\% and 4.6\%; Figure 3b).
+After corrections, the epochs with visual defects dropped from 29 to 12.
 
 \textbf{What works poorly.} Most of these 12 epochs (7 from one specimen)
 have truly folded openings, where the curved cap folds onto itself
 (Figure 4a); others have small holes just under the planar cap (Figure 4b).
-On four deeply hollowed openings, variants A and B differed by 5.7 to 11\%
-in volume: there, the volume depends on an arbitrary choice.
+On four deeply hollowed openings, variants A and B differed by 5.7 to 11\%:
+there, the volume depends on an arbitrary choice.
 
-\textbf{What does not work.} The median volume removed per step was 8.7\%
-(range 0.5--37.5\%). Yet volume \emph{increased} in 15 of 104 steps, by up
+\textbf{What does not work.} The median volume removed per epoch was 8.7\%
+(range 0.5--37.5\%). Yet volume \emph{increased} in 15 of 104 changes, by up
 to 15.3\%, and 21 changes were smaller than the closing uncertainty
-(Figure 3a--b). Scale differences between epochs ($\leq$0.8\%) did not
-explain the increases. In 9 of the 15, including the three largest, the
-main cap lay 2.2 to 5.1~mm further out, adding 19 to 57~cm$^3$, whereas it
-moved by $-2.2$ to $+1.9$~mm in normal steps (Figure 5). Two others followed
-a poorly closed epoch, and four were within the closing uncertainty.
-\todo{Check that MeshFix shows the same 15 increases.}
+(Figure 3a). Scale differences ($\leq$0.8\%) did not explain
+them. In 9 of the 15, including the three largest, the main cap lay
+2.2 to 5.1~mm further out, adding 19 to 57~cm$^3$, whereas it moved by
+$-2.2$ to $+1.9$~mm in the controls (Figure 5). Two others followed a
+poorly closed epoch, and four were within the closing uncertainty. MeshFix
+found exactly the same 15 increases, up to 15.4\%.
 
 % ---------------------------------------------------------------------------
 \section*{Discussion}
 
-A watertight mesh is not necessarily correct: a three-vertex fold can warp a
-planar cap, and inverted debris silently subtracts volume; only visual
-inspection revealed them. The closing uncertainty (about 3\%, up to 11\%)
-cannot explain increases of 13 to 15\%: the scanned edge itself moves, so
-any closing method inherits the shift. Each millimetre changes the volume by
-2 to 4\%, comparable to a typical dissection step. The limiting factor is the
-acquisition, not the closing. We recommend photographing both faces at every
-epoch, fixing the specimen on a rigid support with markers and a scale
-reference, reprocessing the photographs with identical settings, and
-reporting the closing uncertainty with every volume. Without reference
-volumes, real tissue removal on the unphotographed face cannot yet be
-separated from settling or movement of the specimen.
+Only visual inspection revealed folds and inverted debris. The closing uncertainty (about 3\%, up to 11\%) cannot
+explain increases of 13 to 15\%: the scanned edge itself moves, so any
+closing method inherits the shift. Each millimetre changes the volume by 2 to
+4\%, comparable to the tissue removed in a typical epoch. The limiting factor
+is the acquisition, not the closing.
+
+\textbf{With existing data} such as BraDiPho, we suggest planar caps where
+possible, a visual check of every epoch, and reporting the closing
+uncertainty with each volume, flagging increases and changes within it. \textbf{For new acquisitions},
+we recommend photographing both faces at every epoch, fixing the specimen on
+a rigid support with markers and a scale reference, and adding
+structured-light or lidar scanning, possibly less prone to floating fragments
+than stereo photogrammetry. For now, dissection photogrammetry is well suited to
+visualization, anatomy teaching and qualitative comparison with tractography;
+quantitative volumes are close, but not yet reliable.
 
 % ---------------------------------------------------------------------------
+\clearpage
 \section*{Figure captions}
 
 % Character counts include spaces (ECHO limit: 500 per caption).
@@ -158,14 +158,15 @@ separated from settling or movement of the specimen.
 \begin{figure}[h]
   \centering
   \fig{figures/fig1_concept.png}
-  \caption*{\textbf{Figure 1} (\texttt{fig1\_concept.png}, 416 characters).
+  \caption*{\textbf{Figure 1} (\texttt{fig1\_concept.png}, 420 characters).
   Why a watertight volume can still be wrong. Cross-section of a dissected
   hemisphere (grey), open on the unphotographed face. (a) The cap (red)
   follows the edge of the scanned surface. (b) If this edge lies 1~mm further
   out at the next epoch, the volume grows by 2--4\%, as much as a typical
-  dissection step. (c) A three-vertex fold of the boundary warps a planar
+  epoch of dissection. (c) A three-vertex fold of the boundary warps a planar
   cap. (d) Inverted debris silently subtracts its volume.}
 \end{figure}
+\clearpage
 
 \begin{figure}[h]
   \centering
@@ -175,18 +176,21 @@ separated from settling or movement of the specimen.
   photogrammetric mesh. (b) Open boundary, seen from the unphotographed face
   (inside of the shell in dark grey). (c) Watertight result, caps in red.}
 \end{figure}
+\clearpage
 
 \begin{figure}[h]
   \centering
   \fig{figures/fig2_volume_vs_epoch.png}
-  \caption*{\textbf{Figure 3} (\texttt{fig2\_volume\_vs\_epoch.png}, 370
-  characters). Volumes of the 12 specimens. (a) Closed volume versus
-  dissection epoch; volume should only decrease, orange steps increase (15 of
-  104, up to 15\%). (b) Volume change of each step; blue band: closing
-  uncertainty ($\pm$3.4\%), which contains 21 steps. (c) Closing uncertainty
-  of each epoch: volume difference between our closing and a fan closing,
-  variants A and B, and MeshFix. \todo{add panel (c)}}
+  \caption*{\textbf{Figure 3} (\texttt{fig2\_volume\_vs\_epoch.png}, 482
+  characters). (a) Closed volume versus epoch, one panel per specimen. Volume
+  should only decrease; red: the 15 increases among the 104 epoch-to-epoch
+  changes. Grey band: closing uncertainty, $\pm$3.4\%, the largest difference
+  between our closing and a flat fan over all epochs; a change inside it
+  cannot be told apart from a closing effect. (b) Volume difference between
+  our closing and a flat fan or MeshFix (130 epochs), and the two
+  fold-straightening variants (12 problem epochs). Boxes: quartiles.}
 \end{figure}
+\clearpage
 
 \begin{figure}[h]
   \centering
@@ -194,33 +198,31 @@ separated from settling or movement of the specimen.
   \caption*{\textbf{Figure 4} (\texttt{fig3\_failures.png}, 183 characters).
   What works poorly (caps in red, back-facing surfaces in blue). (a) Folded
   opening (spc-07, epoch 2): the curved cap folds. (b) Small holes just under
-  the planar cap (spc-15, epoch 8). \todo{move panel (c) to Figure 5}}
+  the planar cap (spc-15, epoch 8).}
 \end{figure}
+\clearpage
 
 \begin{figure}[h]
   \centering
   \fig{figures/fig5_scanned_edge.png}
-  \caption*{\textbf{Figure 5} (\texttt{fig5\_scanned\_edge.png}, 333
+  \caption*{\textbf{Figure 5} (\texttt{fig5\_scanned\_edge.png}, 443
   characters). Where the volume increases come from. (a) Epoch 8 (orange)
   lying outside epoch 7 (grey) of spc-17: the scanned edge moved 4.1~mm
   outward and the volume rose by 15\%. (b) Outward displacement of the main
-  cap versus volume change, for the 15 increases (orange) and 7 normal steps
-  (grey). Dashed lines: 2 and 4\% of volume per millimetre.}
+  cap versus volume change, for all 15 volume increases (orange) and 7 normal
+  decreases chosen as controls (grey). Dashed: volume added by the displacement alone (2 and 4\%
+  per mm, for cut faces of 70 to 120~cm$^2$); points below also lost
+  tissue.}
 \end{figure}
+\clearpage
 
 % ---------------------------------------------------------------------------
 \section*{Preview figure}
 
-Two options (one is submitted):
-\begin{itemize}
-  \item \textbf{a)} ``Closed, but not trustworthy'': left, a closed epoch
-        with its caps in red (\textit{130/130 watertight}); right, two
-        consecutive epochs overlaid (\textit{+15\% volume while tissue was
-        removed}).
-  \item \textbf{b)} One closed hemisphere, caps in red, with three short
-        lines: \textit{closing: $\pm$0.5\%}, \textit{scanned edge: $\pm$2~mm
-        = $\pm$5--8\%}, \textit{fix the acquisition first}.
-\end{itemize}
+\begin{center}
+  \fig{figures/preview.png}
+\end{center}
+\clearpage
 
 % ---------------------------------------------------------------------------
 \section*{References (Vancouver, in order of first citation)}
@@ -251,17 +253,22 @@ Two options (one is submitted):
 % Reviewers do not see this section (ISMRM rules): it is the only place for
 % funding, code and data links.
 We thank the BraDiPho team for making the dissection photogrammetry data
-openly available (https://bradipho.org).
-% If F. Rheault is not a co-author, add:
-% We thank Fran\c{c}ois Rheault for supervising this work.
-The code is available at https://github.com/guichoquette/close\_mesh.
-This work was carried out during an internship funded by the research funds
-of Fran\c{c}ois Rheault, Universit\'e de Sherbrooke.
-% Optional: ask F. Rheault whether the funding agency should be named.
+openly available (https://bradipho.org), and in particular Laurent Petit
+(Groupe d'Imagerie Neurofonctionnelle, CNRS, Universit\'e de Bordeaux) for
+explaining the acquisition and for helpful discussions on our closing
+approaches. The code is available at
+https://github.com/guichoquette/close\_mesh. This work was carried out during
+an internship funded by the Natural Sciences and Engineering Research Council
+of Canada (NSERC), through the research funds of Fran\c{c}ois Rheault,
+Universit\'e de Sherbrooke.
 
 \section*{Institutional logo}
 
-\todo{Universit\'e de Sherbrooke logo}
+\begin{center}
+  % Universite de Sherbrooke logo only (SCIL logo goes on the poster);
+  % ECHO max 300x300 px
+  \includegraphics[height=2.5cm]{figures/logo_udes_300.png}
+\end{center}
 
 \section*{Keywords (5)}
 
@@ -271,8 +278,6 @@ Brain.
 % ---------------------------------------------------------------------------
 \section*{Authors and categories (ECHO form)}
 
-% Supervisor listed as last author: to confirm with F. Rheault. If he declines,
-% remove him here and use the alternative sentence in the Acknowledgements.
 \begin{itemize}
   \item \textbf{Authors:} Guillaume Choquette (first and presenting author);
         Fran\c{c}ois Rheault. Sherbrooke Connectivity Imaging Laboratory

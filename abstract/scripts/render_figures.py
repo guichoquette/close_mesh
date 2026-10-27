@@ -1,21 +1,25 @@
 """
-Figures 1 and 3 of the abstract: off-screen PyVista renders of closed epochs.
+Figures 2, 4 and 5 of the abstract: off-screen PyVista renders of closed epochs.
 
-Figure 1: an epoch that closes well (spc-01 epo-01): the textured photogrammetric
+fig1 (Figure 2): an epoch that closes well (spc-01 epo-01): the textured photogrammetric
 mesh, its opening, and the closed mesh with the caps in red.
-Figure 3: what does not work: a folded opening closed by a curved cap
-(spc-07 epo-02), small holes and tissue under the planar cap (spc-15 epo-08),
-and a volume increase between two epochs (spc-17 epo-07 -> 08): the surface of
-the later epoch lying outside the earlier one, in orange.
+fig3 (Figure 4): what works poorly: a folded opening closed by a curved cap
+(spc-07 epo-02), and small holes and tissue under the planar cap (spc-15 epo-08).
+fig5 (Figure 5): where the volume increases come from: (a) a volume increase
+between two epochs (spc-17 epo-07 -> 08), the surface of the later epoch lying
+outside the earlier one in orange; (b) outward displacement of the main cap
+against the volume change, for the increases and the control changes of
+``diagnostics/volume_increases.csv`` (``diagnose_volume_increases.py``).
 
 Cap faces are the faces of the closed mesh using a vertex that is not in the
 input mesh. Back faces are drawn in blue, as CloudCompare shows inverted normals.
 
 Usage
 -----
-python abstract/scripts/render_figures.py [fig1] [fig3]
+python abstract/scripts/render_figures.py [fig1] [fig3] [fig5]
 """
 
+import csv
 import sys
 from pathlib import Path
 
@@ -29,7 +33,7 @@ DATA = ROOT / "brain_data"
 FIG = ROOT / "abstract" / "figures"
 
 GRAY, RED, BLUE, ORANGE = "#d9d6cf", "#c0262d", "#2a78d6", "#eb6834"
-INK = "#0b0b0b"
+INK, INK2, BASE, GRID = "#0b0b0b", "#52514e", "#a3a29b", "#e4e3df"
 
 
 def paths(spc: str, epoch: str) -> tuple[Path, Path]:
@@ -105,7 +109,10 @@ def shot(p: pv.Plotter) -> np.ndarray:
 
 
 def panel(images: list[np.ndarray], titles: list[str], out: Path, width_in: float = 7.0) -> None:
-    fig, axes = plt.subplots(1, len(images), figsize=(width_in, width_in / len(images) * 1.05))
+    # Height from the tallest image, plus room for the titles
+    aspect = max(img.shape[0] / img.shape[1] for img in images)
+    fig, axes = plt.subplots(1, len(images),
+                             figsize=(width_in, width_in / len(images) * aspect + 0.3))
     for ax, img, t in zip(axes, images, titles):
         ax.imshow(img)
         ax.set_axis_off()
@@ -151,7 +158,7 @@ def fig1() -> None:
     add_with_backfaces(p, caps, RED)
     look(p, closed, view_open)
     imgs.append(shot(p))
-    panel(imgs, ["a  Photogrammetric mesh", "b  Open boundary (cut)", "c  Closed, watertight"],
+    panel(imgs, ["a  Photogrammetric mesh", "b  Open, unphotographed face", "c  Closed, watertight"],
           FIG / "fig1_pipeline.png")
 
 
@@ -171,15 +178,18 @@ def fig3() -> None:
         imgs.append(shot(p))
         titles.append(title)
 
-    # (c) volume increase spc-17 epo-07 -> 08: surface of 08 outside 07
+    panel(imgs, titles, FIG / "fig3_failures.png")
+
+
+def fig5() -> None:
+    # (a) volume increase spc-17 epo-07 -> 08: surface of 08 outside 07
     _, a_path = paths("spc-17", "07")
-    _, b_path = paths("spc-17", "08")
+    inp_b, b_path = paths("spc-17", "08")
     a, b = pv.read(a_path), pv.read(b_path)
     b = b.compute_implicit_distance(a)
     outside = np.asarray(b["implicit_distance"]) > 1e-3
     faces = b.faces.reshape(-1, 4)[:, 1:]
     fo = outside[faces].all(axis=1)
-    inp_b, _ = paths("spc-17", "08")
     c, n = largest_opening(pv.read(inp_b))
     side = np.cross(n, [0, 0, 1])
     p = plotter()
@@ -187,15 +197,48 @@ def fig3() -> None:
     p.add_mesh(b.extract_cells(np.where(~fo)[0]), color=GRAY)
     p.add_mesh(b.extract_cells(np.where(fo)[0]), color=ORANGE)
     look(p, b, n + 0.5 * side)
-    imgs.append(shot(p))
-    titles.append("c  Epoch 8 outside epoch 7 (+15 %)")
-    panel(imgs, titles, FIG / "fig3_failures.png")
+    img = shot(p)
+
+    # (b) displacement of the main cap against the volume change
+    with open(ROOT / "abstract" / "diagnostics" / "volume_increases.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 7, "axes.edgecolor": INK2,
+                         "axes.labelcolor": INK, "xtick.color": INK2, "ytick.color": INK2,
+                         "axes.linewidth": 0.6})
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(7.0, 3.0), gridspec_kw={"width_ratios": [1, 1.1]})
+    ax.imshow(img)
+    ax.set_axis_off()
+    ax.set_title("a  Epoch 8 outside epoch 7 (spc-17, +15 %)", fontsize=8, color=INK, loc="left")
+
+    x = np.linspace(-2.5, 5.5, 2)
+    for slope in (2, 4):
+        bx.plot(x, slope * x, ls="--", lw=0.7, color=INK2, zorder=1)
+        bx.text(x[-1], slope * x[-1], f"{slope} %/mm", fontsize=5.5, color=INK2, ha="left", va="center")
+    bx.axhline(0, color=GRID, lw=0.6, zorder=0)
+    bx.axvline(0, color=GRID, lw=0.6, zorder=0)
+    for kind, color, label in [("control", BASE, "normal changes"), ("increase", ORANGE, "volume increases")]:
+        sel = [r for r in rows if r["kind"] == kind]
+        bx.scatter([float(r["cap_offset_mm"]) for r in sel], [float(r["change_%"]) for r in sel],
+                   s=16, color=color, edgecolor="white", lw=0.5, zorder=2, label=f"{label} ({len(sel)})")
+    bx.set_xlabel("Outward displacement of the main cap (mm)")
+    bx.set_ylabel("Volume change from the previous epoch (%)")
+    bx.set_xlim(-3, 6.5)
+    bx.spines[["top", "right"]].set_visible(False)
+    bx.legend(frameon=False, fontsize=6, loc="lower right", labelcolor=INK)
+    bx.set_title("b  The scanned edge moves out, the volume rises", fontsize=8, color=INK, loc="left")
+    fig.tight_layout(w_pad=1.0)
+    out = FIG / "fig5_scanned_edge.png"
+    fig.savefig(out, dpi=300, facecolor="white")
+    plt.close(fig)
+    print(out)
 
 
 if __name__ == "__main__":
-    todo = sys.argv[1:] or ["fig1", "fig3"]
+    todo = sys.argv[1:] or ["fig1", "fig3", "fig5"]
     FIG.mkdir(parents=True, exist_ok=True)
     if "fig1" in todo:
         fig1()
     if "fig3" in todo:
         fig3()
+    if "fig5" in todo:
+        fig5()
