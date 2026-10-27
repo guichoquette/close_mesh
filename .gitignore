@@ -1,16 +1,16 @@
-# Environnements virtuels
+# Virtual environments
 venv/
 .env/
 .venv/
 
-# Fichiers temporaires Python
+# Python temporary files
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 *.pdb
 
-# Fichiers Jupyter
+# Jupyter files
 .ipynb_checkpoints/
 
 # Logs
@@ -22,17 +22,17 @@ __pycache__/
 *.pytest_cache/
 *.tox/
 
-# Fichiers système
+# System files
 .DS_Store
 Thumbs.db
 
-# Résultats temporaires / sorties
+# Temporary results / outputs
 *.out
 *.tmp
 *.swp
 *.bak
 
-# Données volumineuses
+# Large data
 brain_data/spc-02
 brain_data/spc-02-output
 brain_data/spc-02-debug
@@ -51,7 +51,7 @@ brain_data/closed_solid
 *.npy
 *.npz
 
-# Images/outputs générés
+# Generated images/outputs
 Images_output/
 *.png
 *.jpg
@@ -59,7 +59,7 @@ Images_output/
 *.tiff
 *.pdf
 
-# Config éditeurs/IDE
+# Editor/IDE config
 .idea/
 *.code-workspace
 

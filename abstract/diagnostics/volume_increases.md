@@ -1,35 +1,35 @@
-# Diagnostic des hausses de volume entre époques (2026-10-26)
+# Diagnosis of volume increases between epochs (2026-10-26)
 
-Une dissection ne fait qu'enlever du tissu : le volume d'une époque fermée ne devrait jamais dépasser celui de l'époque précédente. Sur les 104 pas entre époques consécutives (époques « b » exclues), **15 montrent une hausse** (+0,3 à +15,3 %). Chaque hausse a été comparée à 7 paires « normales » servant de témoins.
+A dissection only removes tissue: the volume of a closed epoch should never exceed that of the previous epoch. Of the 104 steps between consecutive epochs ("b" epochs excluded), **15 show an increase** (+0.3 to +15.3 %). Each increase was compared with 7 "normal" pairs used as controls.
 
-Scripts : `abstract/scripts/diagnose_volume_increases.py`, `cap_plane_offset.py`, `classify_increases.py`. Chiffres : `volume_increases.csv`, `cap_plane_offset.txt`.
+Scripts: `abstract/scripts/diagnose_volume_increases.py`, `cap_plane_offset.py`, `classify_increases.py`. Numbers: `volume_increases.csv`, `cap_plane_offset.txt`.
 
-## Ce qui a été écarté
+## Ruled out
 
-| Hypothèse | Mesure | Résultat |
+| Hypothesis | Measurement | Result |
 |---|---|---|
-| Unités / repère différent | bornes, ICP | Tout est en mètres. Les époques d'un spécimen sont déjà dans le même repère : la distance médiane d'une époque à la précédente est de 0,4 à 0,7 mm, et la translation ICP de 0,07 à 0,36 mm. |
-| Échelle | ICP de similarité tronqué (60 % des paires les plus proches), étendue le long du grand axe | Facteur de 0,992 à 1,008 pour les hausses, contre 0,998 à 1,007 pour les témoins : c'est indiscernable du bruit. Le grand axe reste stable à ±0,5 mm dans la plupart des cas. L'échelle ne peut expliquer au plus que ~±2 % de volume, et rien ne la distingue des témoins. |
-| Coin de volume ajouté par les caps | cap comparé à un éventail sur les mêmes boucles | 0,04 à 2,0 % par époque, comme chez les témoins. Ne peut pas expliquer +13 à +15 %. |
+| Different units / frame | bounds, ICP | Everything is in metres. The epochs of a specimen are already in the same frame: the median distance from one epoch to the previous one is 0.4 to 0.7 mm, and the ICP translation is 0.07 to 0.36 mm. |
+| Scale | trimmed similarity ICP (60 % closest pairs), extent along the long axis | Factor of 0.992 to 1.008 for the increases, versus 0.998 to 1.007 for the controls: indistinguishable from noise. The long axis stays stable within ±0.5 mm in most cases. Scale can explain at most ~±2 % of volume, and nothing distinguishes it from the controls. |
+| Volume wedge added by the caps | cap compared with a fan on the same loops | 0.04 to 2.0 % per epoch, as in the controls. Cannot explain +13 to +15 %. |
 
-## Causes trouvées
+## Causes found
 
-| Cause | Paires | Chiffres |
+| Cause | Pairs | Numbers |
 |---|---|---|
-| **Face de coupe déplacée** : le cap principal et sa boucle (l'endroit où la surface scannée s'arrête) sont plus à l'extérieur à l'époque suivante | 9 / 15 : spc-07 09→10 (+13,4 %), spc-12 02→03, spc-15 10→11 (+5,8 %), spc-15 13→14, spc-17 02→03 (+6,8 %), spc-17 07→08 (+15,3 %), spc-18 02→03, spc-19 08→09, spc-19 11→12 (+12,9 %) | Cap déplacé de +2,2 à +5,1 mm vers l'extérieur ; la boucle bouge d'autant (écart < 0,6 mm entre les deux), avec des plans quasi parallèles (< 1,5°). Tranche correspondante : 19 à 57 cm³, du même ordre que les hausses (p. ex. spc-17 07→08 : +34 cm³ de volume pour une tranche de 40 cm³). 73 à 93 % du volume de l'époque suivante situé hors de la précédente est à moins de 5 mm d'un cap (témoins : 8 à 25 %, sauf spc-01 01→02 à 79 % et spc-18 03→04 à 69 %). L'épaisseur de l'hémisphère (3ᵉ axe principal) augmente de 3 à 6 mm pour les plus grosses hausses (spc-07 09→10, spc-17 02→03 et 07→08, spc-18 02→03, spc-19 11→12) ; pour les autres, elle varie de −0,2 à +2,7 mm. |
-| **Fermeture de l'époque précédente** (ouvertures repliées, caps courbes) | 2 / 15 : spc-07 03→05 (+3,2 %), spc-15 08→09 (+5,2 %) | L'époque précédente a 9 et 4 caps courbes et 54 et 41 ouvertures, contre 1 et 0 caps courbes et 5 et 1 ouvertures pour l'époque suivante. spc-15 epo-08 est l'époque des « trous sous le cap » (fig. 3b). Le cap principal ne bouge pas (+1,3 et 0,0 mm). |
-| **Dans l'incertitude** (< 3,4 %) | 4 / 15 : spc-02 07→08, spc-10 05→06, spc-12 05→06, spc-16 06→07 (+0,3 à +1,9 %) | Cap déplacé de 0,5 à 1,2 mm, ce qui est dans la plage des témoins. |
+| **Shifted cut face**: the main cap and its loop (where the scanned surface stops) are further outward in the next epoch | 9 / 15: spc-07 09→10 (+13.4 %), spc-12 02→03, spc-15 10→11 (+5.8 %), spc-15 13→14, spc-17 02→03 (+6.8 %), spc-17 07→08 (+15.3 %), spc-18 02→03, spc-19 08→09, spc-19 11→12 (+12.9 %) | Cap shifted outward by +2.2 to +5.1 mm; the loop moves by the same amount (difference < 0.6 mm between the two), with nearly parallel planes (< 1.5°). Corresponding slab: 19 to 57 cm³, the same order as the increases (e.g. spc-17 07→08: +34 cm³ of volume for a 40 cm³ slab). 73 to 93 % of the next epoch's volume lying outside the previous one is within 5 mm of a cap (controls: 8 to 25 %, except spc-01 01→02 at 79 % and spc-18 03→04 at 69 %). Hemisphere thickness (3rd principal axis) increases by 3 to 6 mm for the largest increases (spc-07 09→10, spc-17 02→03 and 07→08, spc-18 02→03, spc-19 11→12); for the others, it varies from −0.2 to +2.7 mm. |
+| **Closing of the previous epoch** (folded openings, curved caps) | 2 / 15: spc-07 03→05 (+3.2 %), spc-15 08→09 (+5.2 %) | The previous epoch has 9 and 4 curved caps and 54 and 41 openings, versus 1 and 0 curved caps and 5 and 1 openings for the next epoch. spc-15 epo-08 is the "holes under the cap" epoch (fig. 3b). The main cap does not move (+1.3 and 0.0 mm). |
+| **Within uncertainty** (< 3.4 %) | 4 / 15: spc-02 07→08, spc-10 05→06, spc-12 05→06, spc-16 06→07 (+0.3 to +1.9 %) | Cap shifted by 0.5 to 1.2 mm, which is within the range of the controls. |
 
 ## Conclusion
 
-- **Les grosses hausses viennent du maillage, pas de la fermeture.** La surface scannée ne s'arrête pas au même endroit d'une époque à l'autre près de la face non photographiée (face médiale/de coupe). Le cap suit fidèlement ce bord, et toute fermeture raisonnable (plane, en éventail, au plan moyen) donnerait le même décalage, puisque c'est la boucle elle-même qui bouge.
-- **Ordre de grandeur utile pour l'abstract** : chez les témoins, le cap bouge déjà de −2,2 à +1,9 mm d'une époque à l'autre. Avec une face de coupe d'environ 70 à 120 cm², 1 mm vaut 7 à 12 cm³, soit 2 à 4 % du volume. **L'incertitude sur la position de la face de coupe (~±2 mm, soit ~±5 à 8 %) dépasse celle de la fermeture (≤ 3,4 %)**, et elle est du même ordre que le volume retiré à une étape typique (médiane : 8,7 %).
-- Deux hausses relèvent en partie de nos fermetures imparfaites (ouvertures repliées de spc-07 et spc-15 epo-08).
+- **The large increases come from the mesh, not from the closing.** The scanned surface does not stop at the same place from one epoch to the next near the non-photographed face (medial/cut face). The cap faithfully follows this edge, and any reasonable closing (planar, fan, mean plane) would give the same offset, since it is the loop itself that moves.
+- **Useful order of magnitude for the abstract**: in the controls, the cap already moves by −2.2 to +1.9 mm from one epoch to the next. With a cut face of about 70 to 120 cm², 1 mm is worth 7 to 12 cm³, i.e. 2 to 4 % of the volume. **The uncertainty on the cut-face position (~±2 mm, i.e. ~±5 to 8 %) exceeds that of the closing (≤ 3.4 %)**, and it is of the same order as the volume removed in a typical step (median: 8.7 %).
+- Two increases are partly due to our imperfect closings (folded openings of spc-07 and spc-15 epo-08).
 
-## Réserves (non vérifié)
+## Caveats (not verified)
 
-- Je ne sais pas *pourquoi* le bord scanné bouge : affaissement du tissu sur son support, recadrage manuel différent des maillages (support, table), couverture photographique différente, ou recalage des époques entre elles par BraDiPho. Il faudrait la documentation BraDiPho, ou les photos originales.
-- Je n'ai pas vérifié qu'aucun tissu n'est retiré du côté médial pendant la dissection. Si c'était le cas, une partie des déplacements *négatifs* du cap serait réelle.
-- L'ICP de similarité est perturbé par le tissu retiré entre les époques. Le facteur d'échelle n'est fiable qu'à ~±0,5 % près.
-- Les voxels font 1,5 mm : le volume « hors de l'autre époque » contient environ 4 à 10 cm³ de bruit de discrétisation (valeur des témoins).
-- Les seuils de classification (2 mm, 70 %) ont été choisis à partir de 7 témoins seulement.
+- I do not know *why* the scanned edge moves: tissue sagging on its support, different manual cropping of the meshes (support, table), different photographic coverage, or registration of the epochs to each other by BraDiPho. This would require the BraDiPho documentation or the original photos.
+- I have not verified that no tissue is removed from the medial side during the dissection. If it were, part of the *negative* cap shifts would be real.
+- Similarity ICP is disturbed by the tissue removed between epochs. The scale factor is only reliable to within ~±0.5 %.
+- Voxels are 1.5 mm: the volume "outside the other epoch" contains about 4 to 10 cm³ of discretization noise (control values).
+- The classification thresholds (2 mm, 70 %) were chosen from only 7 controls.
